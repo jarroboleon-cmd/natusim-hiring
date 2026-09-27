@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+from datetime import datetime, timezone, timedelta
 import re
 import json
 import os
@@ -12,6 +13,16 @@ import google.generativeai as genai
 import streamlit.components.v1 as components
 import gspread
 from google.oauth2.service_account import Credentials
+
+def obtener_hora_local():
+    """Retorna la fecha y hora oficial de Ecuador (UTC-5)."""
+    tz_ecuador = timezone(timedelta(hours=-5))
+    return datetime.now(tz_ecuador).strftime('%Y-%m-%d %H:%M:%S')
+
+def obtener_timestamp_local():
+    """Retorna un timestamp compacto en hora de Ecuador para nombres de archivos."""
+    tz_ecuador = timezone(timedelta(hours=-5))
+    return datetime.now(tz_ecuador).strftime('%Y%m%d_%H%M%S')
 
 st.set_page_config(
     page_title="NATUSIM - Hiring Room Inteligente",
@@ -101,7 +112,7 @@ def guardar_postulacion(registro, img_bytes=None):
     foto_filename = ""
     foto_base64 = ""
     if img_bytes:
-        timestamp_clean = time.strftime('%Y%m%d_%H%M%S')
+        timestamp_clean = obtener_timestamp_local()
         email_clean = re.sub(r'[^a-zA-Z0-9]', '_', registro.get("email", "candidato"))
         foto_filename = f"{EVIDENCIAS_DIR}/foto_{timestamp_clean}_{email_clean}.jpg"
         try:
@@ -264,7 +275,7 @@ if vista_admin:
                 puesto_cand = p.get("puesto", "Vacante")
                 fecha = p.get("fecha", "")
                 dictamen = p.get("dictamen", "Pendiente de dictamen")
-                switches = p.get("antifraude", p.get("tab_switches", 0))
+                switches = p.get("antifraude", p.get("alertas_antifraude", p.get("tab_switches", 0)))
                 bio_audit = p.get("biometria_audit", "Verificación fotográfica registrada")
                 reporte_texto = p.get("reporte", "Expediente registrado en base de datos.")
 
@@ -858,18 +869,18 @@ elif st.session_state.step == 3:
 
         <script>
             // SCROLL OBLIGATORIO AL INICIO DE LA PÁGINA (Multicapa)
-            function forceScrollTop() {{
-                try {{ window.scrollTo(0, 0); }} catch(e) {{}}
-                try {{ window.parent.scrollTo({{ top: 0, behavior: 'smooth' }}); }} catch(e) {{}}
-                try {{
+            function forceScrollTop() {
+                try { window.scrollTo(0, 0); } catch(e) {}
+                try { window.parent.scrollTo({ top: 0, behavior: 'smooth' }); } catch(e) {}
+                try {
                     var containers = window.parent.document.querySelectorAll('section.main, [data-testid="stAppViewContainer"], [data-testid="stMain"]');
-                    containers.forEach(function(el) {{ el.scrollTop = 0; }});
-                }} catch(e) {{}}
-                try {{
+                    containers.forEach(function(el) { el.scrollTop = 0; });
+                } catch(e) {}
+                try {
                     var anchor = window.parent.document.getElementById('top_step3');
-                    if (anchor) {{ anchor.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
-                }} catch(e) {{}}
-            }}
+                    if (anchor) { anchor.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+                } catch(e) {}
+            }
             forceScrollTop();
             setTimeout(forceScrollTop, 300);
             setTimeout(forceScrollTop, 800);
@@ -880,48 +891,78 @@ elif st.session_state.step == 3:
             var tabSwitches = {st.session_state.tab_switches};
             counterDisplay.textContent = tabSwitches;
 
-            function registerSwitch() {{
+            // Sincronizar el contador con el campo de texto de Streamlit en tiempo real
+            function syncTabSwitches(count) {
+                try {
+                    var inputs = window.parent.document.querySelectorAll('input[aria-label="anti_fraude_input"]');
+                    inputs.forEach(function(inp) {
+                        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                        nativeSetter.call(inp, count.toString());
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    });
+                } catch(e) {}
+            }
+
+            function registerSwitch() {
                 tabSwitches++;
                 counterDisplay.textContent = tabSwitches;
-                try {{
+                syncTabSwitches(tabSwitches);
+                try {
                     var currentUrl = new URL(window.parent.location.href);
                     currentUrl.searchParams.set('tab_switches', tabSwitches);
-                    window.parent.history.replaceState({{}}, '', currentUrl.toString());
-                }} catch(err) {{}}
-            }}
+                    window.parent.history.replaceState({}, '', currentUrl.toString());
+                } catch(err) {}
+            }
 
-            document.addEventListener('visibilitychange', function() {{
-                if (document.hidden) {{ registerSwitch(); }}
-            }});
-            try {{
-                window.parent.document.addEventListener('visibilitychange', function() {{
-                    if (window.parent.document.hidden) {{ registerSwitch(); }}
+            document.addEventListener('visibilitychange', function() {
+                if (document.hidden) { registerSwitch(); }
+            });
+            try {
+                window.parent.document.addEventListener('visibilitychange', function() {
+                    if (window.parent.document.hidden) { registerSwitch(); }
                 }});
-            }} catch(e) {{}}
+            } catch(e) {}
 
-            var timerInterval = setInterval(function () {{
-                if (remainingSeconds <= 0) {{
+            // Enganchar el botón de envío para asegurar sincronización antes del submit
+            function hookSubmitButton() {
+                try {
+                    var btn = window.parent.document.querySelector('button[kind="primaryFormSubmit"]') ||
+                              window.parent.document.querySelector('button[data-testid="baseButton-primaryFormSubmit"]');
+                    if (btn && !btn.__natusim_hooked) {
+                        btn.__natusim_hooked = true;
+                        btn.addEventListener('mousedown', function() { syncTabSwitches(tabSwitches); });
+                        btn.addEventListener('touchstart', function() { syncTabSwitches(tabSwitches); });
+                        btn.addEventListener('click', function() { syncTabSwitches(tabSwitches); });
+                    }
+                } catch(e) {}
+            }
+            setInterval(hookSubmitButton, 500);
+
+            var timerInterval = setInterval(function () {
+                if (remainingSeconds <= 0) {
                     clearInterval(timerInterval);
                     clockDisplay.textContent = "00:00 - ¡TIEMPO AGOTADO!";
                     clockDisplay.style.color = "#b71c1c";
+                    syncTabSwitches(tabSwitches);
                     
-                    setTimeout(function() {{
-                        try {{
+                    setTimeout(function() {
+                        try {
                             var submitBtn = window.parent.document.querySelector('button[kind="primaryFormSubmit"]') ||
                                            window.parent.document.querySelector('button[data-testid="baseButton-primaryFormSubmit"]');
-                            if (submitBtn) {{
+                            if (submitBtn) {
                                 submitBtn.click();
-                            }}
-                        }} catch(e) {{}}
-                    }}, 600);
+                            }
+                        } catch(e) {}
+                    }, 600);
                     return;
-                }}
+                }
 
                 remainingSeconds--;
                 var mins = Math.floor(remainingSeconds / 60);
                 var secs = remainingSeconds % 60;
                 clockDisplay.textContent = (mins < 10 ? "0" + mins : mins) + ":" + (secs < 10 ? "0" + secs : secs);
-            }}, 1000);
+            }, 1000);
         </script>
         """,
         height=95
@@ -936,6 +977,19 @@ elif st.session_state.step == 3:
     user_answers = []
 
     with st.form("exam_form"):
+        # Campo oculto para auditoría anti-fraude que recibe el conteo desde JavaScript
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stTextInput"]:has(input[aria-label="anti_fraude_input"]) {
+                display: none !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        anti_fraude_val = st.text_input("anti_fraude_input", value=str(st.session_state.tab_switches), label_visibility="collapsed")
+
         for i, item in enumerate(banco):
             st.markdown(f"**Caso {i+1}:** {item['q']}")
             resp = st.radio(f"Seleccione su decisión para el caso {i+1}:", item["opts"], key=f"ans_q_{i}")
@@ -947,8 +1001,21 @@ elif st.session_state.step == 3:
         if submit_exam:
             aciertos = sum(1 for r, correcta in user_answers if r and r.startswith(correcta))
             st.session_state.tech_score = round((aciertos / len(banco)) * 10.0, 1)
-            qp_now = st.query_params
-            st.session_state.tab_switches = int(qp_now.get("tab_switches", st.session_state.tab_switches))
+
+            # Extraer switches desde el campo sincronizado por JavaScript
+            switches_input = 0
+            try:
+                switches_input = int(anti_fraude_val)
+            except Exception:
+                switches_input = 0
+
+            switches_qp = 0
+            try:
+                switches_qp = int(st.query_params.get("tab_switches", 0))
+            except Exception:
+                switches_qp = 0
+
+            st.session_state.tab_switches = max(st.session_state.tab_switches, switches_input, switches_qp)
             st.session_state.step = 4
             st.rerun()
 
@@ -974,10 +1041,12 @@ elif st.session_state.step == 4:
         for m in st.session_state.chat_history
     )
 
+    hora_ecuador = obtener_hora_local()
+
     reporte_confidencial = f"""======================================================================
 NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE TALENTO
 ======================================================================
-FECHA DE EVALUACIÓN: {time.strftime('%Y-%m-%d %H:%M:%S')}
+FECHA DE EVALUACIÓN: {hora_ecuador} (Hora Oficial Ecuador UTC-5)
 CANDIDATO: {st.session_state.candidate_name} ({st.session_state.candidate_email})
 VACANTE: {st.session_state.puesto} (Régimen de Campamento 10/4 o 15/6)
 SCORE FINAL INTEGRAL: {score_final} / 10.0
@@ -1007,7 +1076,7 @@ RECOMENDACIÓN DEL SISTEMA: {dictamen}
 """
 
     registro = {
-        "fecha": time.strftime('%Y-%m-%d %H:%M:%S'),
+        "fecha": hora_ecuador,
         "nombre": st.session_state.candidate_name,
         "email": st.session_state.candidate_email,
         "puesto": st.session_state.puesto,
