@@ -21,6 +21,29 @@ st.set_page_config(
 )
 
 # ==============================================================================
+# SEGURIDAD VISUAL: OCULTAR MENÚS DE STREAMLIT, BOTONES DE EDICIÓN Y GITHUB
+# ==============================================================================
+st.markdown(
+    """
+    <style>
+    /* Ocultar barra superior, menú hamburguesa y botones de edición de código */
+    #MainMenu {visibility: hidden !important; display: none !important;}
+    header {visibility: hidden !important; display: none !important;}
+    footer {visibility: hidden !important; display: none !important;}
+    [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+    [data-testid="stDecoration"] {visibility: hidden !important; display: none !important;}
+    [data-testid="stStatusWidget"] {visibility: hidden !important; display: none !important;}
+    .viewerBadge_container__1QSob {display: none !important;}
+    div[data-testid="stToolbarActions"] {display: none !important;}
+    button[title="View app in GitHub"] {display: none !important;}
+    /* Ajustar espaciado superior */
+    .block-container {padding-top: 1.5rem !important; padding-bottom: 2rem !important;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ==============================================================================
 # 1. PERSISTENCIA EN GOOGLE SHEETS Y RESPALDO LOCAL DE EVIDENCIAS
 # ==============================================================================
 DATA_FILE = "postulaciones_natusim.json"
@@ -29,9 +52,15 @@ EVIDENCIAS_DIR = "evidencias"
 if not os.path.exists(EVIDENCIAS_DIR):
     os.makedirs(EVIDENCIAS_DIR, exist_ok=True)
 
+COLUMNAS_OFICIALES = [
+    "Fecha", "Nombre", "Email", "Puesto", "Score CV",
+    "Score Entrevista", "Score Tecnico", "Score Final",
+    "Dictamen", "Alertas AntiFraude", "Biometria Audit", "Evidencia Foto", "Reporte"
+]
+
 @st.cache_resource
 def conectar_sheet():
-    """Conecta con la hoja de Google Sheets usando las credenciales de Service Account."""
+    """Conecta con la hoja de Google Sheets y garantiza que existan encabezados."""
     if "gcp_service_account" not in st.secrets or "SHEET_ID" not in st.secrets:
         return None
     try:
@@ -42,21 +71,33 @@ def conectar_sheet():
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
         client = gspread.authorize(creds)
         spreadsheet = client.open_by_key(st.secrets["SHEET_ID"])
+
         try:
-            return spreadsheet.worksheet("Resultados_CV")
+            ws = spreadsheet.worksheet("Resultados_CV")
         except Exception:
-            ws = spreadsheet.add_worksheet(title="Resultados_CV", rows=1000, cols=13)
-            ws.append_row([
-                "Fecha", "Nombre", "Email", "Puesto", "Score CV",
-                "Score Entrevista", "Score Tecnico", "Score Final",
-                "Dictamen", "Alertas AntiFraude", "Biometria Audit", "Evidencia Foto", "Reporte"
-            ])
+            ws = spreadsheet.add_worksheet(title="Resultados_CV", rows=1000, cols=15)
+            ws.append_row(COLUMNAS_OFICIALES)
             return ws
+
+        # Verificar si la hoja existente tiene la fila de títulos
+        primeras_filas = ws.row_values(1)
+        if not primeras_filas:
+            ws.append_row(COLUMNAS_OFICIALES)
+        return ws
     except Exception:
         return None
 
+def normalizar_registro(d):
+    """Normaliza las llaves de cualquier diccionario a minúsculas sin espacios."""
+    norm = {}
+    for k, v in d.items():
+        k_clean = str(k).strip().lower().replace(" ", "_").replace("score_", "").replace("alertas_", "")
+        norm[k_clean] = v
+        norm[str(k).strip()] = v
+    return norm
+
 def guardar_postulacion(registro, img_bytes=None):
-    """Guarda la postulación en Google Sheets y en almacenamiento local de respaldo."""
+    """Guarda la postulación en Google Sheets y en almacenamiento local."""
     foto_filename = ""
     foto_base64 = ""
     if img_bytes:
@@ -82,12 +123,12 @@ def guardar_postulacion(registro, img_bytes=None):
                 registro.get("nombre", ""),
                 registro.get("email", ""),
                 registro.get("puesto", ""),
-                registro.get("cv_score", 0.0),
-                registro.get("interview_score", 0.0),
-                registro.get("tech_score", 0.0),
-                registro.get("score_final", 0.0),
+                float(registro.get("cv_score", 0.0)),
+                float(registro.get("interview_score", 0.0)),
+                float(registro.get("tech_score", 0.0)),
+                float(registro.get("score_final", 0.0)),
                 registro.get("dictamen", ""),
-                registro.get("tab_switches", 0),
+                int(registro.get("tab_switches", 0)),
                 registro.get("biometria_audit", ""),
                 foto_filename,
                 registro.get("reporte", "")
@@ -111,20 +152,31 @@ def guardar_postulacion(registro, img_bytes=None):
         pass
 
 def cargar_postulaciones():
-    """Recupera postulaciones desde Google Sheets o archivo local de respaldo."""
+    """Recupera postulaciones desde Google Sheets de forma resiliente."""
+    registros = []
     sheet = conectar_sheet()
     if sheet:
         try:
-            return sheet.get_all_records()
+            filas = sheet.get_all_values()
+            if len(filas) >= 2:
+                encabezados = [h.strip() for h in filas[0]]
+                for fila in filas[1:]:
+                    if any(fila):
+                        item = dict(zip(encabezados, fila))
+                        registros.append(item)
+                if registros:
+                    return registros
         except Exception:
             pass
+
+    # Fallback a archivo local si Sheets no tiene datos aún
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return []
-    return []
+    return registros
 
 # ==============================================================================
 # 2. CONFIGURACIÓN DE IA (GEMINI 1.5 FLASH)
@@ -174,54 +226,85 @@ st.caption("Sistema Autónomo de Selección Técnica y Validación de Identidad 
 # ==============================================================================
 if vista_admin:
     st.subheader("🔒 Portal de Auditoría y Resultados de Selección (Uso Exclusivo RRHH)")
-    st.caption("Consola unificada con evidencia fotográfica, verificación de identidad, alertas anti-fraude y desgloses.")
+    st.caption("Consola en vivo con base de datos unificada, verificación de identidad, alertas y reportes completos.")
 
     rrhh_pw = st.secrets.get("RRHH_PASSWORD", "natusim2026")
     pwd = st.text_input("Ingrese la clave autorizada de Selección de Personal:", type="password", key="pwd_admin")
 
-    if pwd == rrhh_pw:
+    if pwd == rrhh_pw or (not st.secrets.get("RRHH_PASSWORD") and pwd == "natusim2026"):
         st.success("🔓 Sesión Administrativa de Selección Autorizada.")
         postulaciones = cargar_postulaciones()
-        st.metric("Total de Postulaciones Evaluadas", len(postulaciones))
+        st.metric("Total de Postulaciones Registradas", len(postulaciones))
 
         if len(postulaciones) == 0:
             st.info("Aún no se registran evaluaciones completadas en la base de datos.")
         else:
-            for idx, p in enumerate(reversed(postulaciones)):
-                score_final = float(p.get("score_final", 0.0))
-                dictamen = p.get("dictamen", "")
-                switches = p.get("tab_switches", p.get("Alertas AntiFraude", 0))
+            for idx, raw_p in enumerate(reversed(postulaciones)):
+                p = normalizar_registro(raw_p)
+                
+                # Obtención segura de scores numéricos
+                try:
+                    score_final = float(p.get("final", p.get("score_final", 0.0)))
+                except Exception:
+                    score_final = 0.0
+                try:
+                    score_cv = float(p.get("cv", p.get("cv_score", 0.0)))
+                except Exception:
+                    score_cv = 0.0
+                try:
+                    score_entrevista = float(p.get("entrevista", p.get("interview_score", 0.0)))
+                except Exception:
+                    score_entrevista = 0.0
+                try:
+                    score_tecnico = float(p.get("tecnico", p.get("tech_score", 0.0)))
+                except Exception:
+                    score_tecnico = 0.0
+
+                nombre = p.get("nombre", "Candidato")
+                puesto_cand = p.get("puesto", "Vacante")
+                fecha = p.get("fecha", "")
+                dictamen = p.get("dictamen", "Pendiente de dictamen")
+                switches = p.get("antifraude", p.get("tab_switches", 0))
+                bio_audit = p.get("biometria_audit", "Verificación fotográfica registrada")
+                reporte_texto = p.get("reporte", "Expediente registrado en base de datos.")
+
                 color = "🟢" if score_final >= 7.5 else ("🟡" if score_final >= 5.5 else "🔴")
 
-                with st.expander(f"{color} {p.get('nombre')} | {p.get('puesto')} | Score Final: {score_final:.1f}/10 ({p.get('fecha')})"):
+                with st.expander(f"{color} {nombre} | {puesto_cand} | Score: {score_final:.1f}/10 ({fecha})"):
                     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                    col_m1.metric("Score CV (30%)", f"{float(p.get('cv_score', 0)):.1f} / 10")
-                    col_m2.metric("Entrevista IA (30%)", f"{float(p.get('interview_score', 0)):.1f} / 10")
-                    col_m3.metric("Examen Técnico (40%)", f"{float(p.get('tech_score', 0)):.1f} / 10")
+                    col_m1.metric("Score CV (30%)", f"{score_cv:.1f} / 10")
+                    col_m2.metric("Entrevista IA (30%)", f"{score_entrevista:.1f} / 10")
+                    col_m3.metric("Examen Técnico (40%)", f"{score_tecnico:.1f} / 10")
                     col_m4.metric("SCORE PONDERADO", f"{score_final:.1f} / 10")
 
-                    st.markdown(f"**Correo Electrónico:** `{p.get('email')}`")
+                    st.markdown(f"**Correo Electrónico:** `{p.get('email', 'No registrado')}`")
                     st.markdown(f"**Recomendación del Sistema:** **{dictamen}**")
-                    st.markdown(f"**🚨 Alertas Anti-Fraude:** `{switches}` salidas de pantalla o cambios de pestaña durante el examen.")
-                    st.markdown(f"**Auditoría de Identidad:** {p.get('biometria_audit', 'Verificada sin novedades')}")
+                    st.markdown(f"**🚨 Alertas Anti-Fraude:** `{switches}` salidas de pantalla registradas durante el examen.")
+                    st.markdown(f"**Auditoría de Identidad:** {bio_audit}")
 
+                    # Mostrar Evidencia Fotográfica tomada junto a la Cédula
                     st.markdown("#### 📷 Evidencia Fotográfica y Documento de Identidad")
                     foto_b64 = p.get("foto_base64", "")
-                    foto_path = p.get("foto_archivo", "")
+                    foto_path = p.get("foto_archivo", p.get("evidencia_foto", ""))
 
                     if foto_b64:
                         try:
                             img_data = base64.b64decode(foto_b64)
-                            st.image(img_data, caption=f"Fotografía oficial de {p.get('nombre')} sosteniendo su cédula", width=380)
+                            st.image(img_data, caption=f"Fotografía oficial de {nombre} sosteniendo su cédula", width=360)
                         except Exception:
-                            st.caption("No se pudo previsualizar la foto en Base64.")
+                            st.caption("Imagen custodiada digitalmente.")
                     elif foto_path and os.path.exists(foto_path):
-                        st.image(foto_path, caption=f"Fotografía del aspirante {p.get('nombre')}", width=380)
+                        st.image(foto_path, caption=f"Fotografía de {nombre}", width=360)
                     else:
                         st.caption("Fotografía registrada y custodiada en expediente digital.")
 
-                    st.markdown("#### 📄 Informe Ejecutivo y Transcripción")
-                    st.text_area(f"Expediente #{len(postulaciones)-idx}:", p.get("reporte", "Sin detalle disponible"), height=220)
+                    st.markdown("#### 📄 Informe Ejecutivo y Transcripción Completa")
+                    st.text_area(
+                        f"Ficha de Evaluación #{len(postulaciones)-idx}:",
+                        value=reporte_texto,
+                        height=240,
+                        key=f"rep_{idx}"
+                    )
 
         st.markdown("---")
         st.info("💡 **Navegación:** Para regresar al portal del postulante, retire `?view=rrhh` de la barra de direcciones.")
@@ -398,7 +481,7 @@ if st.session_state.step == 1:
 
         postulaciones_existentes = cargar_postulaciones()
         if email.strip():
-            previas = sum(1 for p in postulaciones_existentes if str(p.get("email", "")).strip().lower() == email.strip().lower())
+            previas = sum(1 for p in postulaciones_existentes if str(normalizar_registro(p).get("email", "")).strip().lower() == email.strip().lower())
             if previas > 0:
                 st.warning(f"ℹ️ Este correo ya registra {previas} evaluación(es) previas registradas en el sistema.")
 
@@ -444,8 +527,16 @@ if st.session_state.step == 1:
             else:
                 extracted_text = cv_text_fallback
 
-            if len(extracted_text.strip()) < 30:
-                st.error("❌ Por favor adjunte un archivo PDF o pegue el contenido de su Currículum Vitae para ser evaluado.")
+            if len(extracted_text.strip()) < 40:
+                st.error("❌ El documento está vacío o no contiene suficiente texto. Adjunte su Currículum Vitae laboral.")
+                st.stop()
+
+            # Validación de palabras clave esenciales de un CV
+            texto_lower = extracted_text.lower()
+            indicios_cv = ["experiencia", "laboral", "trabajo", "educación", "estudios", "formación", "habilidades", "contacto", "perfil", "referencias", "capacitación", "finca", "camaronera", "operario", "biólogo", "técnico", "puesto"]
+            coincidencias = sum(1 for palabra in indicios_cv if palabra in texto_lower)
+            if coincidencias < 2:
+                st.error("❌ **Documento Inválido:** El archivo subido no presenta la estructura de un Currículum Vitae laboral (no contiene secciones de experiencia o formación). Suba su CV real.")
                 st.stop()
 
             st.session_state.candidate_name = nombre.strip()
@@ -499,7 +590,7 @@ if st.session_state.step == 1:
                 st.session_state.biometric_audit = detalle_biometria
 
             # ------------------------------------------------------------------
-            # ANÁLISIS DE CURRÍCULUM VITAE CON GEMINI (VALIDACIÓN EXCLUSIVA DE CV)
+            # ANÁLISIS DE CURRÍCULUM VITAE CON GEMINI (VALIDACIÓN ESTRICTA)
             # ------------------------------------------------------------------
             with st.spinner("📄 Verificando autenticidad del Currículum Vitae y perfil técnico..."):
                 if api_key:
@@ -513,15 +604,16 @@ if st.session_state.step == 1:
                         CONTENIDO DEL DOCUMENTO:
                         {extracted_text}
 
-                        INSTRUCCIONES ESTRICTAS:
-                        1. Verifica si este documento es verdaderamente un CURRÍCULUM VITAE profesional (datos de contacto, experiencia laboral o formación).
-                           Si es literatura, manual de operaciones, artículo o texto no laboral, responde 'es_cv_valido': false.
-                        2. Si es un CV válido, califícalo de 1.0 a 10.0 considerando la experiencia en fincas camaroneras y disposición para régimen de campamento (10/4 o 15/6).
+                        INSTRUCCIONES OBLIGATORIAS:
+                        1. CLASIFICACIÓN DEL DOCUMENTO: Evalúa si este texto corresponde de manera inequívoca a un CURRÍCULUM VITAE / HOJA DE VIDA laboral de una persona.
+                           Si es un manual, artículo científico, ley, libro, literatura, noticia, factura o documento que NO sea la hoja de vida laboral de un aspirante, DEBES responder estrictamente "es_cv_valido": false y detallar la razón.
+                        2. Si es un CV válido, califícalo de 1.0 a 10.0 considerando su ajuste al trabajo de campo camaronero y turnos de 10/4 o 15/6.
                         3. Formula una pregunta de validación técnica altamente personalizada sobre la experiencia mencionada.
 
-                        Responde ÚNICAMENTE en formato JSON:
+                        Responde ÚNICAMENTE en este formato JSON:
                         {{
                             "es_cv_valido": true,
+                            "motivo_rechazo": "",
                             "cv_score": 8.0,
                             "empresa_detectada": "nombre empresa o No especificada",
                             "cargo_detectado": "cargo previo",
@@ -532,8 +624,12 @@ if st.session_state.step == 1:
                         clean_cv = re.search(r"\{.*\}", res_cv, re.DOTALL)
                         if clean_cv:
                             data_cv = json.loads(clean_cv.group(0))
-                            if not data_cv.get("es_cv_valido", True):
-                                st.error("❌ **Documento Rechazado:** El archivo adjunto no corresponde a un Currículum Vitae profesional. Por favor adjunte su Hoja de Vida laboral.")
+                            
+                            # VERIFICACIÓN ESTRICTA DE CV
+                            es_valido = data_cv.get("es_cv_valido")
+                            if es_valido is False or str(es_valido).lower() in ["false", "no"]:
+                                motivo = data_cv.get("motivo_rechazo", "El archivo cargado no corresponde a un Currículum Vitae profesional.")
+                                st.error(f"❌ **Documento Rechazado:** {motivo} Por favor adjunte exclusivamente una Hoja de Vida laboral.")
                                 st.stop()
 
                             st.session_state.cv_score = float(data_cv.get("cv_score", 7.5))
@@ -560,11 +656,26 @@ if st.session_state.step == 1:
                 st.rerun()
 
 # ==============================================================================
-# PASO 2: ENTREVISTA TÉCNICA DINÁMICA DE 5 PREGUNTAS (AUTO-SCROLL AL INICIO)
+# PASO 2: ENTREVISTA TÉCNICA DINÁMICA DE 5 PREGUNTAS (AUTO-SCROLL)
 # ==============================================================================
 elif st.session_state.step == 2:
     st.markdown("<div id='top_step2'></div>", unsafe_allow_html=True)
-    components.html("<script>window.parent.scrollTo({top: 0, behavior: 'smooth'});</script>", height=0)
+    components.html(
+        """
+        <script>
+            function subir() {
+                try { window.parent.scrollTo({ top: 0, behavior: 'smooth' }); } catch(e){}
+                try {
+                    var c = window.parent.document.querySelectorAll('section.main, [data-testid="stAppViewContainer"], [data-testid="stMain"]');
+                    c.forEach(function(el) { el.scrollTop = 0; });
+                } catch(e){}
+            }
+            subir();
+            setTimeout(subir, 300);
+        </script>
+        """,
+        height=0
+    )
 
     st.subheader("Paso 2: Entrevista Virtual Técnica (5 Preguntas Adaptativas)")
     st.info(
@@ -649,10 +760,9 @@ elif st.session_state.step == 2:
             st.rerun()
 
 # ==============================================================================
-# PASO 3: EXAMEN DE ESCENARIOS (RELOJ EN VIVO, ANTI-PLAGIO, AUTO-SCROLL Y AUTO-ENVÍO)
+# PASO 3: EXAMEN DE ESCENARIOS (SCROLL AL TOP OBLIGATORIO, RELOJ EN VIVO Y ANTI-FRAUDE)
 # ==============================================================================
 elif st.session_state.step == 3:
-    # 1. Scroll inmediato al inicio de la página donde están las instrucciones
     st.markdown("<div id='top_step3'></div>", unsafe_allow_html=True)
     
     st.subheader(f"Paso 3: Examen Técnico de Escenarios - {st.session_state.puesto}")
@@ -664,14 +774,12 @@ elif st.session_state.step == 3:
         "4. Al finalizar, presione el botón **'🏁 Finalizar y Enviar Evaluación'**."
     )
 
-    # Inicializar hora de inicio del examen
     if st.session_state.quiz_start_time is None:
         st.session_state.quiz_start_time = time.time()
 
     tiempo_transcurrido = int(time.time() - st.session_state.quiz_start_time)
     segundos_restantes = max(0, 600 - tiempo_transcurrido)
 
-    # Componente HTML/JS: Scroll al top, Reloj interactivo en tiempo real, Rastreo de pestañas y Auto-Submit
     components.html(
         f"""
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 12px; text-align: center;">
@@ -685,10 +793,22 @@ elif st.session_state.step == 3:
         </div>
 
         <script>
-            // Forzar scroll al inicio de la página en la ventana principal
-            try {{
-                window.parent.scrollTo({{ top: 0, behavior: 'smooth' }});
-            }} catch(e) {{}}
+            // SCROLL OBLIGATORIO AL INICIO DE LA PÁGINA (Multicapa)
+            function forceScrollTop() {{
+                try {{ window.scrollTo(0, 0); }} catch(e) {{}}
+                try {{ window.parent.scrollTo({{ top: 0, behavior: 'smooth' }}); }} catch(e) {{}}
+                try {{
+                    var containers = window.parent.document.querySelectorAll('section.main, [data-testid="stAppViewContainer"], [data-testid="stMain"]');
+                    containers.forEach(function(el) {{ el.scrollTop = 0; }});
+                }} catch(e) {{}}
+                try {{
+                    var anchor = window.parent.document.getElementById('top_step3');
+                    if (anchor) {{ anchor.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
+                }} catch(e) {{}}
+            }}
+            forceScrollTop();
+            setTimeout(forceScrollTop, 300);
+            setTimeout(forceScrollTop, 800);
 
             var remainingSeconds = {segundos_restantes};
             var clockDisplay = document.getElementById('countdown_clock');
@@ -696,7 +816,6 @@ elif st.session_state.step == 3:
             var tabSwitches = {st.session_state.tab_switches};
             counterDisplay.textContent = tabSwitches;
 
-            // Rastreo de cambio de pestaña / minimizar ventana
             function registerSwitch() {{
                 tabSwitches++;
                 counterDisplay.textContent = tabSwitches;
@@ -716,14 +835,12 @@ elif st.session_state.step == 3:
                 }});
             }} catch(e) {{}}
 
-            // Reloj en tiempo real segundo a segundo
             var timerInterval = setInterval(function () {{
                 if (remainingSeconds <= 0) {{
                     clearInterval(timerInterval);
                     clockDisplay.textContent = "00:00 - ¡TIEMPO AGOTADO!";
                     clockDisplay.style.color = "#b71c1c";
                     
-                    // Auto-envío del formulario
                     setTimeout(function() {{
                         try {{
                             var submitBtn = window.parent.document.querySelector('button[kind="primaryFormSubmit"]') ||
@@ -732,7 +849,7 @@ elif st.session_state.step == 3:
                                 submitBtn.click();
                             }}
                         }} catch(e) {{}}
-                    }}, 800);
+                    }}, 600);
                     return;
                 }}
 
@@ -747,7 +864,6 @@ elif st.session_state.step == 3:
     )
     st.markdown("---")
 
-    # Barajar opciones una sola vez por sesión
     if st.session_state.shuffled_banco is None:
         raw = BANCO_BIOLOGOS if "biólogo" in st.session_state.puesto.lower() else RAW_OPERARIOS
         st.session_state.shuffled_banco = preparar_banco_aleatorio(raw)
@@ -767,7 +883,6 @@ elif st.session_state.step == 3:
         if submit_exam:
             aciertos = sum(1 for r, correcta in user_answers if r and r.startswith(correcta))
             st.session_state.tech_score = round((aciertos / len(banco)) * 10.0, 1)
-            # Actualizar tab_switches detectados en la URL
             qp_now = st.query_params
             st.session_state.tab_switches = int(qp_now.get("tab_switches", st.session_state.tab_switches))
             st.session_state.step = 4
@@ -796,7 +911,7 @@ elif st.session_state.step == 4:
     )
 
     reporte_confidencial = f"""======================================================================
-NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE PERSONAL
+NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE TALENTO
 ======================================================================
 FECHA DE EVALUACIÓN: {time.strftime('%Y-%m-%d %H:%M:%S')}
 CANDIDATO: {st.session_state.candidate_name} ({st.session_state.candidate_email})
@@ -805,7 +920,7 @@ SCORE FINAL INTEGRAL: {score_final} / 10.0
 RECOMENDACIÓN DEL SISTEMA: {dictamen}
 
 ----------------------------------------------------------------------
-1. MATRIZ DE CALIFICACIÓN POR COMPONENTES
+1. MATRIZ DE CALIFICACIÓN POR DIMENSIÓN
 ----------------------------------------------------------------------
 - Calificación Curricular (CV): {st.session_state.cv_score} / 10.0 (30%)
 - Calificación Entrevista Adaptativa: {st.session_state.interview_score} / 10.0 (30%)
