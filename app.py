@@ -855,8 +855,7 @@ elif st.session_state.step == 3:
     tiempo_transcurrido = int(time.time() - st.session_state.quiz_start_time)
     segundos_restantes = max(0, 600 - tiempo_transcurrido)
 
-    components.html(
-        f"""
+    html_examen = """
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 12px; text-align: center;">
             <div style="font-size: 17px; font-weight: bold; color: #5d4037;">
                 ⏱️ CRONÓMETRO EN VIVO: 
@@ -885,10 +884,10 @@ elif st.session_state.step == 3:
             setTimeout(forceScrollTop, 300);
             setTimeout(forceScrollTop, 800);
 
-            var remainingSeconds = {segundos_restantes};
+            var remainingSeconds = __REMAINING_SECONDS__;
             var clockDisplay = document.getElementById('countdown_clock');
             var counterDisplay = document.getElementById('switch_counter');
-            var tabSwitches = {st.session_state.tab_switches};
+            var tabSwitches = __TAB_SWITCHES__;
             counterDisplay.textContent = tabSwitches;
 
             // Sincronizar el contador con el campo de texto de Streamlit en tiempo real
@@ -921,7 +920,7 @@ elif st.session_state.step == 3:
             try {
                 window.parent.document.addEventListener('visibilitychange', function() {
                     if (window.parent.document.hidden) { registerSwitch(); }
-                }});
+                });
             } catch(e) {}
 
             // Enganchar el botón de envío para asegurar sincronización antes del submit
@@ -964,9 +963,9 @@ elif st.session_state.step == 3:
                 clockDisplay.textContent = (mins < 10 ? "0" + mins : mins) + ":" + (secs < 10 ? "0" + secs : secs);
             }, 1000);
         </script>
-        """,
-        height=95
-    )
+    """.replace("__REMAINING_SECONDS__", str(segundos_restantes)).replace("__TAB_SWITCHES__", str(st.session_state.tab_switches))
+
+    components.html(html_examen, height=95)
     st.markdown("---")
 
     if st.session_state.shuffled_banco is None:
