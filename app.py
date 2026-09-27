@@ -9,6 +9,7 @@ import base64
 from PIL import Image
 from pypdf import PdfReader
 import google.generativeai as genai
+import streamlit.components.v1 as components
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -44,15 +45,14 @@ def conectar_sheet():
         try:
             return spreadsheet.worksheet("Resultados_CV")
         except Exception:
-            # Si no existe la pestaña, crearla con encabezados
-            ws = spreadsheet.add_worksheet(title="Resultados_CV", rows=1000, cols=12)
+            ws = spreadsheet.add_worksheet(title="Resultados_CV", rows=1000, cols=13)
             ws.append_row([
                 "Fecha", "Nombre", "Email", "Puesto", "Score CV",
                 "Score Entrevista", "Score Tecnico", "Score Final",
-                "Dictamen", "Biometria Audit", "Evidencia Foto", "Reporte"
+                "Dictamen", "Alertas AntiFraude", "Biometria Audit", "Evidencia Foto", "Reporte"
             ])
             return ws
-    except Exception as e:
+    except Exception:
         return None
 
 def guardar_postulacion(registro, img_bytes=None):
@@ -63,9 +63,12 @@ def guardar_postulacion(registro, img_bytes=None):
         timestamp_clean = time.strftime('%Y%m%d_%H%M%S')
         email_clean = re.sub(r'[^a-zA-Z0-9]', '_', registro.get("email", "candidato"))
         foto_filename = f"{EVIDENCIAS_DIR}/foto_{timestamp_clean}_{email_clean}.jpg"
-        with open(foto_filename, "wb") as f:
-            f.write(img_bytes)
-        foto_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        try:
+            with open(foto_filename, "wb") as f:
+                f.write(img_bytes)
+            foto_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        except Exception:
+            pass
 
     registro["foto_archivo"] = foto_filename
     registro["foto_base64"] = foto_base64
@@ -84,6 +87,7 @@ def guardar_postulacion(registro, img_bytes=None):
                 registro.get("tech_score", 0.0),
                 registro.get("score_final", 0.0),
                 registro.get("dictamen", ""),
+                registro.get("tab_switches", 0),
                 registro.get("biometria_audit", ""),
                 foto_filename,
                 registro.get("reporte", "")
@@ -100,8 +104,11 @@ def guardar_postulacion(registro, img_bytes=None):
         except Exception:
             local_data = []
     local_data.append(registro)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(local_data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(local_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 def cargar_postulaciones():
     """Recupera postulaciones desde Google Sheets o archivo local de respaldo."""
@@ -132,8 +139,8 @@ MODELO = "gemini-1.5-flash"
 # ==============================================================================
 query_params = st.query_params
 vista_admin = query_params.get("view") in ["rrhh", "resultados", "admin"]
+switches_en_url = int(query_params.get("tab_switches", 0))
 
-# Inicializar variables de estado
 defaults = {
     "step": 1,
     "candidate_name": "",
@@ -149,21 +156,25 @@ defaults = {
     "chat_history": [],
     "chat_turn": 0,
     "shuffled_banco": None,
-    "quiz_start_time": None
+    "quiz_start_time": None,
+    "tab_switches": switches_en_url
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+if switches_en_url > st.session_state.tab_switches:
+    st.session_state.tab_switches = switches_en_url
+
 st.title("🦐 NATUSIM - Hiring Room Inteligente de Preselección Camaronera")
-st.caption("Sistema Autónomo de Selección Técnica y Validación de Identidad | Régimen de Campamento 15/6")
+st.caption("Sistema Autónomo de Selección Técnica y Validación de Identidad | Jornada en Campamento (10/4 o 15/6)")
 
 # ==============================================================================
 # 4. PORTAL EXCLUSIVO DE RRHH (?view=rrhh)
 # ==============================================================================
 if vista_admin:
     st.subheader("🔒 Portal de Auditoría y Resultados de Selección (Uso Exclusivo RRHH)")
-    st.caption("Consola unificada con evidencia fotográfica, verificación de identidad y desgloses de calificación.")
+    st.caption("Consola unificada con evidencia fotográfica, verificación de identidad, alertas anti-fraude y desgloses.")
 
     rrhh_pw = st.secrets.get("RRHH_PASSWORD", "natusim2026")
     pwd = st.text_input("Ingrese la clave autorizada de Selección de Personal:", type="password", key="pwd_admin")
@@ -179,6 +190,7 @@ if vista_admin:
             for idx, p in enumerate(reversed(postulaciones)):
                 score_final = float(p.get("score_final", 0.0))
                 dictamen = p.get("dictamen", "")
+                switches = p.get("tab_switches", p.get("Alertas AntiFraude", 0))
                 color = "🟢" if score_final >= 7.5 else ("🟡" if score_final >= 5.5 else "🔴")
 
                 with st.expander(f"{color} {p.get('nombre')} | {p.get('puesto')} | Score Final: {score_final:.1f}/10 ({p.get('fecha')})"):
@@ -190,9 +202,9 @@ if vista_admin:
 
                     st.markdown(f"**Correo Electrónico:** `{p.get('email')}`")
                     st.markdown(f"**Recomendación del Sistema:** **{dictamen}**")
-                    st.markdown(f"**Auditoría Biométrica:** {p.get('biometria_audit', 'Verificada sin novedades')}")
+                    st.markdown(f"**🚨 Alertas Anti-Fraude:** `{switches}` salidas de pantalla o cambios de pestaña durante el examen.")
+                    st.markdown(f"**Auditoría de Identidad:** {p.get('biometria_audit', 'Verificada sin novedades')}")
 
-                    # Mostrar Evidencia Fotográfica tomada junto a la Cédula
                     st.markdown("#### 📷 Evidencia Fotográfica y Documento de Identidad")
                     foto_b64 = p.get("foto_base64", "")
                     foto_path = p.get("foto_archivo", "")
@@ -200,13 +212,13 @@ if vista_admin:
                     if foto_b64:
                         try:
                             img_data = base64.b64decode(foto_b64)
-                            st.image(img_data, caption=f"Fotografía del aspirante {p.get('nombre')} tomada durante la prueba", width=380)
+                            st.image(img_data, caption=f"Fotografía oficial de {p.get('nombre')} sosteniendo su cédula", width=380)
                         except Exception:
                             st.caption("No se pudo previsualizar la foto en Base64.")
                     elif foto_path and os.path.exists(foto_path):
-                        st.image(foto_path, caption=f"Fotografía local del aspirante {p.get('nombre')}", width=380)
+                        st.image(foto_path, caption=f"Fotografía del aspirante {p.get('nombre')}", width=380)
                     else:
-                        st.caption("Fotografía registrada en expediente digital.")
+                        st.caption("Fotografía registrada y custodiada en expediente digital.")
 
                     st.markdown("#### 📄 Informe Ejecutivo y Transcripción")
                     st.text_area(f"Expediente #{len(postulaciones)-idx}:", p.get("reporte", "Sin detalle disponible"), height=220)
@@ -214,7 +226,7 @@ if vista_admin:
         st.markdown("---")
         st.info("💡 **Navegación:** Para regresar al portal del postulante, retire `?view=rrhh` de la barra de direcciones.")
     elif pwd:
-        st.error("❌ Clave incorrecta. Acceso restringido a personal autorizado.")
+        st.error("❌ Clave incorrecta. Acceso restringido a personal de Selección.")
     st.stop()
 
 # ==============================================================================
@@ -269,7 +281,7 @@ RAW_OPERARIOS = [
     ("Una tarea física repetitiva en tabla de picado le genera dolor lumbar. ¿Qué hace?",
      "Informar a seguridad ocupacional y solicitar pausas activas o rotación.",
      ["Ignorar el dolor.", "Acelerar el trabajo.", "Cambiar de puesto sin avisar."]),
-    ("El puesto exige vivir en campamento bajo la jornada rotativa de 15/6. ¿Qué respuesta es la correcta?",
+    ("El puesto exige vivir en campamento bajo la jornada rotativa de 10/4 o 15/6. ¿Qué respuesta es la correcta?",
      "Confirmar honestamente su disponibilidad y compromisos familiares.",
      ["Aceptar aunque sepa que no podrá cumplirlo.", "Ocultar restricciones personales.", "Resolverlo cuando ya esté contratado."]),
     ("Comete un error involuntario al anotar los kg de balanceado. ¿Qué hace?",
@@ -336,7 +348,7 @@ RAW_BIOLOGOS = [
      "Reportar la incompatibilidad de seguridad y derivar a revisión humana obligatoria.",
      ["Recomendar contratación solo por su conocimiento.", "Ignorar la actitud en el informe.", "Descartarlo sin documentar el motivo."]),
     ("¿Qué factor es determinante para evitar la fuga de talento técnico en camaroneras?",
-     "Transparencia, ruta de crecimiento profesional, condiciones dignas en campamento bajo jornada 15/6 y reconocimiento.",
+     "Transparencia, ruta de crecimiento profesional, condiciones dignas en campamento bajo jornada de 10/4 o 15/6 y reconocimiento.",
      ["Salarios fijos sin incentivos.", "Evitar capacitaciones.", "Aumentar horas de turno."]),
     ("Un proveedor ofrece comisiones personales a cambio de aprobar un insumo de baja calidad. ¿Qué hace?",
      "Rechazar firmemente, reportar el intento de soborno a auditoría y evaluar el producto de forma objetiva.",
@@ -368,23 +380,22 @@ def preparar_banco_aleatorio(raw_list):
 # PASO 1: REGISTRO, AUDITORÍA BIOMÉTRICA CON CÉDULA Y CARGA DE CV
 # ==============================================================================
 if st.session_state.step == 1:
-    st.subheader("Paso 1: Identificación del Aspirante, Fotografía con Cédula y CV")
+    st.subheader("Paso 1: Identificación del Aspirante, Fotografía con Cédula y Carga de CV")
 
     st.info(
         "📋 **INSTRUCCIONES OBLIGATORIAS PARA EL POSTULANTE:**\n"
-        "1. Complete sus nombres completos y correo electrónico activo.\n"
-        "2. **VERIFICACIÓN BIOMÉTRICA DE SEGURIDAD:** Debe tomarse una foto clara frente a la cámara web **sosteniendo su cédula de identidad física o documento oficial junto a su rostro**. La Inteligencia Artificial auditará la nitidez y presencia de ambos elementos.\n"
-        "3. Adjunte su Hoja de Vida en formato PDF o TXT (o pegue el texto en el recuadro).\n"
-        "4. Presione **'🚀 Validar Identidad y Analizar Hoja de Vida'** para iniciar."
+        "1. Ingrese sus nombres completos y su **correo electrónico oficial** (debe ser el mismo registrado en su CV).\n"
+        "2. **VERIFICACIÓN BIOMÉTRICA:** Tómese una foto clara frente a la cámara web **sosteniendo su cédula de identidad física o documento oficial junto a su rostro**.\n"
+        "3. **DOCUMENTO EXCLUSIVO:** Adjunte **únicamente su Currículum Vitae** en formato PDF o TXT (o pegue el texto completo en el recuadro).\n"
+        "4. Presione **'🚀 Validar Identidad y Analizar Hoja de Vida'** para comenzar."
     )
 
     col1, col2 = st.columns([1, 1])
     with col1:
         puesto = st.selectbox("1. Seleccione la vacante a la que postula:", ["Operario Acuícola de Campo", "Biólogo / Técnico de Producción"])
         nombre = st.text_input("2. Nombres y Apellidos completos:", placeholder="Ej. Carlos Alberto Mendoza Ramos")
-        email = st.text_input("3. Correo electrónico válido de contacto:", placeholder="carlos.mendoza@correo.com")
+        email = st.text_input("3. Correo electrónico válido (debe coincidir con su CV):", placeholder="carlos.mendoza@correo.com")
 
-        # Alerta de postulaciones previas
         postulaciones_existentes = cargar_postulaciones()
         if email.strip():
             previas = sum(1 for p in postulaciones_existentes if str(p.get("email", "")).strip().lower() == email.strip().lower())
@@ -392,19 +403,19 @@ if st.session_state.step == 1:
                 st.warning(f"ℹ️ Este correo ya registra {previas} evaluación(es) previas registradas en el sistema.")
 
         st.markdown("#### 📸 Evidencia de Identidad (Rostro + Cédula)")
-        st.caption("Asegúrese de contar con buena iluminación y sostener su cédula visible a la altura del pecho o rostro.")
+        st.caption("Sostenga su documento de identidad físico claramente visible a la altura del pecho o rostro.")
         img_camera = st.camera_input("Capturar fotografía oficial:")
 
-        uploaded_cv = st.file_uploader("4. Adjunte su Hoja de Vida (PDF o TXT):", type=["pdf", "txt"])
-        cv_text_fallback = st.text_area("5. O pegue el texto de su CV aquí si no dispone del archivo:", height=140)
+        uploaded_cv = st.file_uploader("4. Cargue EXCLUSIVAMENTE su Currículum Vitae (PDF o TXT):", type=["pdf", "txt"])
+        cv_text_fallback = st.text_area("5. O pegue el texto completo de su CV aquí si no dispone del archivo:", height=140)
 
     with col2:
         st.markdown("### 🎯 Parámetros de Selección Camaronera")
         st.markdown(
-            "El departamento de Selección de Personal evalúa su postulación bajo los siguientes criterios:\n"
-            "- **Operario Acuícola de Campo:** Experiencia práctica en piscinas, alimentación, muestreos y faena de pesca. (No se discrimina por nivel de instrucción).\n"
-            "- **Biólogo / Técnico de Producción:** Formación en Acuicultura o Biología, manejo de calidad de agua, fitoplancton y patología.\n"
-            "- **Régimen de Campamento:** Capacidad real de residir en finca bajo la jornada rotativa de **15 días de trabajo por 6 días libres (15/6)**."
+            "El departamento de Selección de Personal evalúa su postulación bajo los siguientes requerimientos:\n"
+            "- **Operario Acuícola de Campo:** Experiencia práctica previa en fincas camaroneras (alimentación, muestreos, atarraya, mantenimiento y faena).\n"
+            "- **Biólogo / Técnico de Producción:** Formación en Acuicultura o Biología marina, manejo de calidad de agua, fitoplancton y protocolos de bioseguridad.\n"
+            "- **Régimen de Campamento:** La posición implica residir en campamento camaronero bajo esquemas rotativos de **10 días de labor por 4 días de descanso (10/4)** o **15 días de labor por 6 días de descanso (15/6)**, según la zona operativa de finca."
         )
 
         if st.button("🚀 Validar Identidad y Analizar Hoja de Vida", type="primary"):
@@ -416,10 +427,9 @@ if st.session_state.step == 1:
                 st.error("❌ Correo electrónico no válido. Ingrese una dirección con formato correcto (ej: usuario@dominio.com).")
                 st.stop()
             if not img_camera:
-                st.error("❌ **Requisito Obligatorio de Seguridad:** Debe capturar una fotografía sosteniendo su documento de identidad físico para validar su postulación.")
+                st.error("❌ **Requisito Obligatorio:** Debe capturar una fotografía sosteniendo su documento de identidad físico para validar su postulación.")
                 st.stop()
 
-            # Extracción del texto del CV
             extracted_text = ""
             if uploaded_cv is not None:
                 if uploaded_cv.name.endswith(".pdf"):
@@ -434,11 +444,10 @@ if st.session_state.step == 1:
             else:
                 extracted_text = cv_text_fallback
 
-            if len(extracted_text.strip()) < 25:
-                st.error("❌ Por favor adjunte un archivo PDF o pegue el contenido de su Hoja de Vida para ser evaluado.")
+            if len(extracted_text.strip()) < 30:
+                st.error("❌ Por favor adjunte un archivo PDF o pegue el contenido de su Currículum Vitae para ser evaluado.")
                 st.stop()
 
-            # Guardar datos en sesión
             st.session_state.candidate_name = nombre.strip()
             st.session_state.candidate_email = email.strip()
             st.session_state.puesto = puesto
@@ -448,7 +457,7 @@ if st.session_state.step == 1:
             # ------------------------------------------------------------------
             # AUDITORÍA BIOMÉTRICA CON GEMINI 1.5 FLASH (VISIÓN ARTIFICIAL)
             # ------------------------------------------------------------------
-            with st.spinner("🔍 La Inteligencia Artificial analiza la fotografía para validar identidad y documento oficial..."):
+            with st.spinner("🔍 Analizando fotografía con IA para verificar rostro y documento de identidad..."):
                 biometria_aprobada = True
                 detalle_biometria = "Validación fotográfica aceptada."
 
@@ -457,14 +466,14 @@ if st.session_state.step == 1:
                         pil_img = Image.open(io.BytesIO(img_bytes))
                         model_vision = genai.GenerativeModel(MODELO)
                         prompt_biometria = f"""
-                        Eres el auditor biométrico oficial de una empresa camaronera.
-                        Analiza la siguiente imagen capturada por un aspirante al puesto de {puesto} llamado '{nombre}'.
+                        Eres el auditor biométrico de seguridad de una empresa camaronera.
+                        Analiza la siguiente imagen capturada por el postulante '{nombre}'.
 
-                        REQUISITOS DE AUDITORÍA:
-                        1. ¿Existe un rostro humano visible, claro y en primer plano?
-                        2. ¿La persona sostiene o muestra un documento de identidad oficial (cédula, pasaporte, credencial)?
+                        REQUISITOS ESTRICTOS:
+                        1. ¿Existe un rostro humano visible, claro y sin obstrucciones?
+                        2. ¿La persona sostiene o muestra un documento de identidad oficial (cédula o pasaporte)?
 
-                        Responde ÚNICAMENTE un objeto JSON válido con esta estructura:
+                        Responde ÚNICAMENTE un JSON válido:
                         {{
                             "aprobado": true,
                             "motivo": "Explicación breve del resultado",
@@ -473,19 +482,14 @@ if st.session_state.step == 1:
                         }}
                         """
                         res_vision = model_vision.generate_content([prompt_biometria, pil_img]).text
-                        # Limpiar posible bloque de código markdown ```json
                         clean_json = re.search(r"\{.*\}", res_vision, re.DOTALL)
                         if clean_json:
                             data_bio = json.loads(clean_json.group(0))
                             biometria_aprobada = data_bio.get("aprobado", True)
-                            detalle_biometria = data_bio.get("motivo", "Verificación biométrica procesada con éxito.")
-                        else:
-                            detalle_biometria = "Registro biométrico capturado para archivo de RRHH."
+                            detalle_biometria = data_bio.get("motivo", "Verificación biométrica procesada.")
                     except Exception as e:
-                        detalle_biometria = f"Registro biométrico almacenado para verificación humana ({e})."
+                        detalle_biometria = "Fotografía archivada para revisión humana."
                         biometria_aprobada = True
-                else:
-                    detalle_biometria = "Registro de imagen archivado para revisión de RRHH."
 
                 if not biometria_aprobada:
                     st.error(f"❌ **Validación de Identidad no superada:** {detalle_biometria}")
@@ -495,24 +499,25 @@ if st.session_state.step == 1:
                 st.session_state.biometric_audit = detalle_biometria
 
             # ------------------------------------------------------------------
-            # ANÁLISIS DEL CV CON GEMINI
+            # ANÁLISIS DE CURRÍCULUM VITAE CON GEMINI (VALIDACIÓN EXCLUSIVA DE CV)
             # ------------------------------------------------------------------
-            with st.spinner("📄 Analizando perfil curricular con la matriz técnica de producción..."):
+            with st.spinner("📄 Verificando autenticidad del Currículum Vitae y perfil técnico..."):
                 if api_key:
                     try:
                         model_cv = genai.GenerativeModel(MODELO)
                         prompt_cv = f"""
-                        Actúa como el Jefe Técnico de Reclutamiento para una camaronera en Ecuador.
-                        Evalúa esta Hoja de Vida para la vacante: {puesto}.
-                        Candidato: {nombre}.
+                        Actúa como el Director Técnico de Reclutamiento de una empresa camaronera en Ecuador.
+                        Analiza el siguiente documento para la vacante: {puesto}.
+                        Candidato registrado: {nombre}.
 
-                        CONTENIDO DEL CV:
+                        CONTENIDO DEL DOCUMENTO:
                         {extracted_text}
 
-                        CRITERIOS:
-                        - Si es 'Operario Acuícola de Campo': Califica de 1.0 a 10.0 en base a experiencia de campo previa en fincas (no discriminar por educación).
-                        - Si es 'Biólogo / Técnico de Producción': Exige estudios universitarios en biología o acuicultura y manejo de piscinas.
-                        - Formula una pregunta de validación técnica altamente personalizada sobre la experiencia mencionada.
+                        INSTRUCCIONES ESTRICTAS:
+                        1. Verifica si este documento es verdaderamente un CURRÍCULUM VITAE profesional (datos de contacto, experiencia laboral o formación).
+                           Si es literatura, manual de operaciones, artículo o texto no laboral, responde 'es_cv_valido': false.
+                        2. Si es un CV válido, califícalo de 1.0 a 10.0 considerando la experiencia en fincas camaroneras y disposición para régimen de campamento (10/4 o 15/6).
+                        3. Formula una pregunta de validación técnica altamente personalizada sobre la experiencia mencionada.
 
                         Responde ÚNICAMENTE en formato JSON:
                         {{
@@ -527,6 +532,10 @@ if st.session_state.step == 1:
                         clean_cv = re.search(r"\{.*\}", res_cv, re.DOTALL)
                         if clean_cv:
                             data_cv = json.loads(clean_cv.group(0))
+                            if not data_cv.get("es_cv_valido", True):
+                                st.error("❌ **Documento Rechazado:** El archivo adjunto no corresponde a un Currículum Vitae profesional. Por favor adjunte su Hoja de Vida laboral.")
+                                st.stop()
+
                             st.session_state.cv_score = float(data_cv.get("cv_score", 7.5))
                             st.session_state.extracted_entities = {
                                 "empresa": data_cv.get("empresa_detectada", "Experiencia previa"),
@@ -551,9 +560,12 @@ if st.session_state.step == 1:
                 st.rerun()
 
 # ==============================================================================
-# PASO 2: ENTREVISTA TÉCNICA DINÁMICA DE 5 PREGUNTAS
+# PASO 2: ENTREVISTA TÉCNICA DINÁMICA DE 5 PREGUNTAS (AUTO-SCROLL AL INICIO)
 # ==============================================================================
 elif st.session_state.step == 2:
+    st.markdown("<div id='top_step2'></div>", unsafe_allow_html=True)
+    components.html("<script>window.parent.scrollTo({top: 0, behavior: 'smooth'});</script>", height=0)
+
     st.subheader("Paso 2: Entrevista Virtual Técnica (5 Preguntas Adaptativas)")
     st.info(
         "💬 **INSTRUCCIONES:**\n"
@@ -561,7 +573,7 @@ elif st.session_state.step == 2:
         "2. Escriba su respuesta con honestidad y el mayor detalle técnico posible.\n"
         "3. Al responder la quinta pregunta, el sistema habilitará el botón para ingresar al examen de casos reales."
     )
-    st.caption("Esta conversación queda registrada y auditada por la IA para el expediente de Talento Humano.")
+    st.caption("Esta conversación queda registrada y auditada para el expediente confidencial de Selección.")
     st.success(f"📌 **Progreso:** Pregunta {st.session_state.chat_turn} de 5")
 
     for msg in st.session_state.chat_history:
@@ -586,7 +598,7 @@ elif st.session_state.step == 2:
                         {dialogo}
 
                         Formula la pregunta NÚMERO {t+1} de 5.
-                        Indaga sobre su criterio práctico ante imprevistos en piscinas, seguridad de campamento o manejo de turnos 15/6.
+                        Indaga sobre su criterio práctico ante imprevistos en piscinas, seguridad de campamento o manejo de turnos rotativos de 10/4 o 15/6.
                         Haz una pregunta concisa, técnica y directa.
                         """
                         next_q = model.generate_content(prompt_chat).text.strip()
@@ -594,12 +606,11 @@ elif st.session_state.step == 2:
                         variadas = [
                             "¿Cómo procede si en plena madrugada una bomba de transferencia o aireador presenta falla eléctrica?",
                             "Describa una situación real donde tuvo que corregir un parámetro crítico de agua en menos de una hora.",
-                            "¿Cómo maneja su adaptación física y familiar al régimen de campamento 15/6?",
+                            "¿Cómo maneja su adaptación física y familiar al régimen de campamento en jornadas de 10/4 o 15/6?",
                             "¿Qué protocolo sigue cuando detecta un producto biológico o balanceado con fecha próxima a expirar?"
                         ]
                         next_q = variadas[t % len(variadas)]
                 elif t >= 5:
-                    # EVALUACIÓN DE LAS RESPUESTAS POR GEMINI AL FINALIZAR
                     if api_key:
                         try:
                             model = genai.GenerativeModel(MODELO)
@@ -613,7 +624,7 @@ elif st.session_state.step == 2:
                             Devuelve ÚNICAMENTE un JSON:
                             {{
                                 "interview_score": 8.0,
-                                "resumen_tecnico": "Breve resumen de competencias demostradas y actitud hacia el trabajo de campamento 15/6"
+                                "resumen_tecnico": "Breve resumen de competencias demostradas y actitud hacia el trabajo de campamento"
                             }}
                             """
                             res_ev = model.generate_content(prompt_eval).text
@@ -638,39 +649,105 @@ elif st.session_state.step == 2:
             st.rerun()
 
 # ==============================================================================
-# PASO 3: EXAMEN DE ESCENARIOS DE FINCA (OPCIONES ALEATORIAS)
+# PASO 3: EXAMEN DE ESCENARIOS (RELOJ EN VIVO, ANTI-PLAGIO, AUTO-SCROLL Y AUTO-ENVÍO)
 # ==============================================================================
 elif st.session_state.step == 3:
+    # 1. Scroll inmediato al inicio de la página donde están las instrucciones
+    st.markdown("<div id='top_step3'></div>", unsafe_allow_html=True)
+    
     st.subheader(f"Paso 3: Examen Técnico de Escenarios - {st.session_state.puesto}")
     st.info(
         "⏱️ **INSTRUCCIONES DEL EXAMEN:**\n"
-        "1. Dispone de **10 minutos** para responder 20 casos situacionales reales de finca camaronera.\n"
-        "2. Cada caso evalúa su criterio ante situaciones operativas, bioseguridad y prevención de riesgos.\n"
-        "3. Al terminar, presione el botón **'🏁 Finalizar y Enviar Evaluación'**."
+        "1. Dispone de **10 minutos exactos** para responder 20 casos situacionales reales de finca camaronera.\n"
+        "2. **MONITOREO ANTI-PLAGIO ACTIVO:** El sistema detecta y audita si cambia de pestaña o minimiza la pantalla.\n"
+        "3. **TIEMPO LÍMITE:** Al agotarse el cronómetro, la evaluación se cerrará y enviará automáticamente con las respuestas marcadas.\n"
+        "4. Al finalizar, presione el botón **'🏁 Finalizar y Enviar Evaluación'**."
     )
 
-    # Iniciar temporizador en servidor
+    # Inicializar hora de inicio del examen
     if st.session_state.quiz_start_time is None:
         st.session_state.quiz_start_time = time.time()
 
     tiempo_transcurrido = int(time.time() - st.session_state.quiz_start_time)
-    tiempo_restante = max(0, 600 - tiempo_transcurrido)
-    minutos = tiempo_restante // 60
-    segundos = tiempo_restante % 60
+    segundos_restantes = max(0, 600 - tiempo_transcurrido)
 
-    st.markdown(
+    # Componente HTML/JS: Scroll al top, Reloj interactivo en tiempo real, Rastreo de pestañas y Auto-Submit
+    components.html(
         f"""
-        <div style="background-color: #e8f4fd; border: 1px solid #b6d4fe; border-radius: 8px; padding: 12px; text-align: center;">
-            <span style="font-size: 18px; font-weight: bold; color: #0d6efd;">⏱️ Tiempo Restante de Examen: </span>
-            <span style="font-size: 22px; font-weight: bold; color: #dc3545;">{minutos:02d}:{segundos:02d}</span>
-            <br><span style="font-size: 13px; color: #6c757d;">Responda las 20 preguntas con calma antes de que expire el tiempo.</span>
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 12px; text-align: center;">
+            <div style="font-size: 17px; font-weight: bold; color: #5d4037;">
+                ⏱️ CRONÓMETRO EN VIVO: 
+                <span id="countdown_clock" style="font-size: 24px; font-weight: 900; color: #d32f2f; margin-left: 8px;">10:00</span>
+            </div>
+            <div style="font-size: 13px; font-weight: bold; color: #c62828; margin-top: 4px;">
+                ⚠️ AUDITORÍA ANTI-FRAUDE: Salidas de pantalla registradas: <span id="switch_counter" style="background:#ffcdd2; padding:2px 8px; border-radius:4px;">0</span>
+            </div>
         </div>
+
+        <script>
+            // Forzar scroll al inicio de la página en la ventana principal
+            try {{
+                window.parent.scrollTo({{ top: 0, behavior: 'smooth' }});
+            }} catch(e) {{}}
+
+            var remainingSeconds = {segundos_restantes};
+            var clockDisplay = document.getElementById('countdown_clock');
+            var counterDisplay = document.getElementById('switch_counter');
+            var tabSwitches = {st.session_state.tab_switches};
+            counterDisplay.textContent = tabSwitches;
+
+            // Rastreo de cambio de pestaña / minimizar ventana
+            function registerSwitch() {{
+                tabSwitches++;
+                counterDisplay.textContent = tabSwitches;
+                try {{
+                    var currentUrl = new URL(window.parent.location.href);
+                    currentUrl.searchParams.set('tab_switches', tabSwitches);
+                    window.parent.history.replaceState({{}}, '', currentUrl.toString());
+                }} catch(err) {{}}
+            }}
+
+            document.addEventListener('visibilitychange', function() {{
+                if (document.hidden) {{ registerSwitch(); }}
+            }});
+            try {{
+                window.parent.document.addEventListener('visibilitychange', function() {{
+                    if (window.parent.document.hidden) {{ registerSwitch(); }}
+                }});
+            }} catch(e) {{}}
+
+            // Reloj en tiempo real segundo a segundo
+            var timerInterval = setInterval(function () {{
+                if (remainingSeconds <= 0) {{
+                    clearInterval(timerInterval);
+                    clockDisplay.textContent = "00:00 - ¡TIEMPO AGOTADO!";
+                    clockDisplay.style.color = "#b71c1c";
+                    
+                    // Auto-envío del formulario
+                    setTimeout(function() {{
+                        try {{
+                            var submitBtn = window.parent.document.querySelector('button[kind="primaryFormSubmit"]') ||
+                                           window.parent.document.querySelector('button[data-testid="baseButton-primaryFormSubmit"]');
+                            if (submitBtn) {{
+                                submitBtn.click();
+                            }}
+                        }} catch(e) {{}}
+                    }}, 800);
+                    return;
+                }}
+
+                remainingSeconds--;
+                var mins = Math.floor(remainingSeconds / 60);
+                var secs = remainingSeconds % 60;
+                clockDisplay.textContent = (mins < 10 ? "0" + mins : mins) + ":" + (secs < 10 ? "0" + secs : secs);
+            }}, 1000);
+        </script>
         """,
-        unsafe_allow_html=True
+        height=95
     )
     st.markdown("---")
 
-    # Barajar opciones una sola vez por sesión (evita patrón A-B-C-D)
+    # Barajar opciones una sola vez por sesión
     if st.session_state.shuffled_banco is None:
         raw = BANCO_BIOLOGOS if "biólogo" in st.session_state.puesto.lower() else RAW_OPERARIOS
         st.session_state.shuffled_banco = preparar_banco_aleatorio(raw)
@@ -688,8 +765,11 @@ elif st.session_state.step == 3:
         submit_exam = st.form_submit_button("🏁 Finalizar y Enviar Evaluación", type="primary")
 
         if submit_exam:
-            aciertos = sum(1 for r, correcta in user_answers if r.startswith(correcta))
+            aciertos = sum(1 for r, correcta in user_answers if r and r.startswith(correcta))
             st.session_state.tech_score = round((aciertos / len(banco)) * 10.0, 1)
+            # Actualizar tab_switches detectados en la URL
+            qp_now = st.query_params
+            st.session_state.tab_switches = int(qp_now.get("tab_switches", st.session_state.tab_switches))
             st.session_state.step = 4
             st.rerun()
 
@@ -697,7 +777,6 @@ elif st.session_state.step == 3:
 # PASO 4: PANTALLA EXCLUSIVA DE AGRADECIMIENTO (SIN NOTAS NI RESULTADOS AL CANDIDATO)
 # ==============================================================================
 elif st.session_state.step == 4:
-    # Ponderación interna: CV 30%, Entrevista IA 30%, Examen Técnico 40%
     score_final = round(
         (st.session_state.cv_score * 0.3) +
         (st.session_state.interview_score * 0.3) +
@@ -705,13 +784,12 @@ elif st.session_state.step == 4:
     )
 
     if score_final >= 7.5:
-        dictamen = "PRIORIDAD ALTA — Candidato recomendado para fase presencial"
+        dictamen = "PRIORIDAD ALTA — Recomendado para fase presencial"
     elif score_final >= 5.5:
         dictamen = "PRIORIDAD MEDIA — Requiere revisión detallada por RRHH"
     else:
         dictamen = "PRIORIDAD BAJA — No cumple perfil técnico mínimo"
 
-    # Construcción del expediente confidencial de RRHH
     chat_transcript = "\n\n".join(
         f"{'Entrevistador IA' if m['role']=='agent' else 'Candidato'}: {m['content']}"
         for m in st.session_state.chat_history
@@ -722,24 +800,25 @@ NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE PERSONAL
 ======================================================================
 FECHA DE EVALUACIÓN: {time.strftime('%Y-%m-%d %H:%M:%S')}
 CANDIDATO: {st.session_state.candidate_name} ({st.session_state.candidate_email})
-VACANTE: {st.session_state.puesto} (Régimen Campamento 15/6)
+VACANTE: {st.session_state.puesto} (Régimen de Campamento 10/4 o 15/6)
 SCORE FINAL INTEGRAL: {score_final} / 10.0
 RECOMENDACIÓN DEL SISTEMA: {dictamen}
 
 ----------------------------------------------------------------------
 1. MATRIZ DE CALIFICACIÓN POR COMPONENTES
 ----------------------------------------------------------------------
-- Calificación Curricular (CV): {st.session_state.cv_score} / 10.0 (Ponderación 30%)
-- Calificación Entrevista Adaptativa: {st.session_state.interview_score} / 10.0 (Ponderación 30%)
-- Examen Técnico Situacional: {st.session_state.tech_score} / 10.0 (Ponderación 40%)
+- Calificación Curricular (CV): {st.session_state.cv_score} / 10.0 (30%)
+- Calificación Entrevista Adaptativa: {st.session_state.interview_score} / 10.0 (30%)
+- Examen Técnico Situacional: {st.session_state.tech_score} / 10.0 (40%)
 
 ----------------------------------------------------------------------
-2. AUDITORÍA BIOMÉTRICA Y VERIFICACIÓN DE IDENTIDAD
+2. AUDITORÍA DE SEGURIDAD Y ANTI-FRAUDE
 ----------------------------------------------------------------------
-Dictamen de Identidad: {st.session_state.biometric_audit}
-Empresa Registrada en CV: {st.session_state.extracted_entities.get('empresa', 'No especificada')}
-Cargo Registrado en CV: {st.session_state.extracted_entities.get('cargo', 'Técnico')}
-Resumen Técnico de la IA: {st.session_state.interview_summary}
+- Salidas de Pantalla / Cambios de Pestaña: {st.session_state.tab_switches}
+- Dictamen de Identidad: {st.session_state.biometric_audit}
+- Empresa Registrada en CV: {st.session_state.extracted_entities.get('empresa', 'No especificada')}
+- Cargo Registrado en CV: {st.session_state.extracted_entities.get('cargo', 'Técnico')}
+- Resumen Técnico de la IA: {st.session_state.interview_summary}
 
 ----------------------------------------------------------------------
 3. TRANSCRIPCIÓN COMPLETA DE LA ENTREVISTA
@@ -748,7 +827,6 @@ Resumen Técnico de la IA: {st.session_state.interview_summary}
 ======================================================================
 """
 
-    # Guardar en base de datos (Google Sheets + Foto + Respaldo Local)
     registro = {
         "fecha": time.strftime('%Y-%m-%d %H:%M:%S'),
         "nombre": st.session_state.candidate_name,
@@ -759,14 +837,13 @@ Resumen Técnico de la IA: {st.session_state.interview_summary}
         "tech_score": st.session_state.tech_score,
         "score_final": score_final,
         "dictamen": dictamen,
+        "tab_switches": st.session_state.tab_switches,
         "biometria_audit": st.session_state.biometric_audit,
         "reporte": reporte_confidencial
     }
     guardar_postulacion(registro, st.session_state.candidate_photo_bytes)
 
-    # --------------------------------------------------------------------------
-    # VISUALIZACIÓN AL CANDIDATO: MENSAJE INSTITUCIONAL LIMPIO (SIN NOTAS)
-    # --------------------------------------------------------------------------
+    # VISUALIZACIÓN AL CANDIDATO: MENSAJE INSTITUCIONAL LIMPIO (SIN NOTAS NI RESULTADOS)
     st.balloons()
     st.success("🎉 ¡PROCESO DE POSTULACIÓN COMPLETADO CON ÉXITO!")
 
@@ -774,18 +851,18 @@ Resumen Técnico de la IA: {st.session_state.interview_summary}
         f"""
         ### Estimado(a) **{st.session_state.candidate_name}**,
 
-        Le agradecemos sinceramente por haber participado en el proceso de preselección para la vacante de **{st.session_state.puesto}** en NATUSIM.
+        Le agradecemos por haber completado el proceso de preselección para la vacante de **{st.session_state.puesto}** en NATUSIM.
 
         📋 **Recepción de Recaudos Confirmada:**
-        - ✅ Registro de datos personales y verificación fotográfica de identidad.
-        - ✅ Análisis de Hoja de Vida y experiencia previa en el sector acuícola.
-        - ✅ Entrevista virtual técnica y examen de escenarios de finca.
+        - ✅ Registro de datos personales y validación fotográfica de identidad.
+        - ✅ Verificación de Currículum Vitae y experiencia técnica en el sector acuícola.
+        - ✅ Entrevista virtual técnica y examen situacional de campo.
 
         🔒 **Políticas de Selección y Siguientes Pasos:**
-        Su expediente completo ha sido remitido al departamento de **Talento Humano**. 
-        En caso de que su perfil se ajuste a los requerimientos de la operación y vacantes disponibles en campamento bajo la jornada 15/6, el equipo de Selección se contactará formalmente con usted mediante llamada telefónica o al correo electrónico registrado (**{st.session_state.candidate_email}**).
+        Su expediente confidencial ha sido remitido al departamento de **Talento Humano**. 
+        En caso de que su perfil se ajuste a los requerimientos de la operación y vacantes disponibles en campamento bajo jornadas rotativas de 10/4 o 15/6, el equipo de Selección se contactará formalmente con usted mediante llamada telefónica o al correo oficial registrado (**{st.session_state.candidate_email}**).
 
-        *Ya puede cerrar esta ventana con total tranquilidad.*
+        *Ya puede cerrar esta ventana.*
         """
     )
     st.markdown("---")
