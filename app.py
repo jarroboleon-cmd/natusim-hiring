@@ -593,39 +593,63 @@ if st.session_state.step == 1:
             # ANÁLISIS DE CURRÍCULUM VITAE CON GEMINI (VALIDACIÓN ESTRICTA)
             # ------------------------------------------------------------------
             with st.spinner("📄 Verificando autenticidad del Currículum Vitae y perfil técnico..."):
+                es_biologo = "biólogo" in puesto.lower() or "técnico" in puesto.lower()
+
                 if api_key:
                     try:
                         model_cv = genai.GenerativeModel(MODELO)
-                        prompt_cv = f"""
-                        Actúa como el Director Técnico de Reclutamiento de una empresa camaronera en Ecuador.
-                        Analiza el siguiente documento para la vacante: {puesto}.
-                        Candidato registrado: {nombre}.
+                        if es_biologo:
+                            prompt_cv = f"""
+                            Actúa como el Gerente General y Director de Producción de una empresa camaronera.
+                            Evalúa este Currículum Vitae para el cargo de JEFATURA TÉCNICA: {puesto}.
+                            Candidato: {nombre}.
 
-                        CONTENIDO DEL DOCUMENTO:
-                        {extracted_text}
+                            CONTENIDO DEL DOCUMENTO:
+                            {extracted_text}
 
-                        INSTRUCCIONES OBLIGATORIAS:
-                        1. CLASIFICACIÓN DEL DOCUMENTO: Evalúa si este texto corresponde de manera inequívoca a un CURRÍCULUM VITAE / HOJA DE VIDA laboral de una persona.
-                           Si es un manual, artículo científico, ley, libro, literatura, noticia, factura o documento que NO sea la hoja de vida laboral de un aspirante, DEBES responder estrictamente "es_cv_valido": false y detallar la razón.
-                        2. Si es un CV válido, califícalo de 1.0 a 10.0 considerando su ajuste al trabajo de campo camaronero y turnos de 10/4 o 15/6.
-                        3. Formula una pregunta de validación técnica altamente personalizada sobre la experiencia mencionada.
+                            INSTRUCCIONES ESTRICTAS:
+                            1. Valida si es un CV profesional real de un profesional o técnico en Acuicultura/Biología. Si es literatura, manual, noticia o texto no laboral, responde 'es_cv_valido': false.
+                            2. Califica de 1.0 a 10.0 considerando su formación universitaria, manejo de parámetros de agua, patologías, biomasa y liderazgo de cuadrillas bajo régimen 10/4 o 15/6.
+                            3. Genera una primera pregunta TÉCNICA y de NIVEL DE JEFATURA sobre el manejo de piscinas o personal en base a su CV.
 
-                        Responde ÚNICAMENTE en este formato JSON:
-                        {{
-                            "es_cv_valido": true,
-                            "motivo_rechazo": "",
-                            "cv_score": 8.0,
-                            "empresa_detectada": "nombre empresa o No especificada",
-                            "cargo_detectado": "cargo previo",
-                            "pregunta_1": "Pregunta técnica personalizada sobre su experiencia"
-                        }}
-                        """
+                            Responde ÚNICAMENTE en JSON:
+                            {{
+                                "es_cv_valido": true,
+                                "motivo_rechazo": "",
+                                "cv_score": 8.0,
+                                "empresa_detectada": "nombre empresa o No especificada",
+                                "cargo_detectado": "cargo previo",
+                                "pregunta_1": "Pregunta técnica de liderazgo o parámetros de agua sobre su experiencia"
+                            }}
+                            """
+                        else:
+                            prompt_cv = f"""
+                            Actúa como el Jefe de Campo de una finca camaronera.
+                            Evalúa este Currículum Vitae para el cargo de OBRERO / OPERARIO DE CAMPO: {puesto}.
+                            Candidato: {nombre}.
+
+                            CONTENIDO DEL DOCUMENTO:
+                            {extracted_text}
+
+                            INSTRUCCIONES ESTRICTAS:
+                            1. Valida si es un CV de un trabajador real. Si es un manual, artículo o texto ajeno, responde 'es_cv_valido': false.
+                            2. Califica de 1.0 a 10.0 priorizando la experiencia práctica en piscinas (muestreos, lance de atarraya, alimentación, faena de pesca, mantenimiento de mallas) y resistencia física en campamento (10/4 o 15/6).
+                            3. Genera una primera pregunta OPERATIVA, SENCILLA y de CAMPO sobre las labores manuales que realizaba en su trabajo anterior.
+
+                            Responde ÚNICAMENTE en JSON:
+                            {{
+                                "es_cv_valido": true,
+                                "motivo_rechazo": "",
+                                "cv_score": 8.0,
+                                "empresa_detectada": "nombre empresa o No especificada",
+                                "cargo_detectado": "cargo previo",
+                                "pregunta_1": "Pregunta práctica y clara sobre sus labores manuales en piscinas"
+                            }}
+                            """
                         res_cv = model_cv.generate_content(prompt_cv).text
                         clean_cv = re.search(r"\{.*\}", res_cv, re.DOTALL)
                         if clean_cv:
                             data_cv = json.loads(clean_cv.group(0))
-                            
-                            # VERIFICACIÓN ESTRICTA DE CV
                             es_valido = data_cv.get("es_cv_valido")
                             if es_valido is False or str(es_valido).lower() in ["false", "no"]:
                                 motivo = data_cv.get("motivo_rechazo", "El archivo cargado no corresponde a un Currículum Vitae profesional.")
@@ -635,18 +659,24 @@ if st.session_state.step == 1:
                             st.session_state.cv_score = float(data_cv.get("cv_score", 7.5))
                             st.session_state.extracted_entities = {
                                 "empresa": data_cv.get("empresa_detectada", "Experiencia previa"),
-                                "cargo": data_cv.get("cargo_detectado", "Técnico")
+                                "cargo": data_cv.get("cargo_detectado", "Técnico" if es_biologo else "Operario")
                             }
-                            q1 = data_cv.get("pregunta_1", f"En base a su experiencia en {st.session_state.extracted_entities['empresa']}, describa sus labores diarias en piscinas.")
+                            q1 = data_cv.get("pregunta_1", "")
                         else:
                             st.session_state.cv_score = 7.5
-                            q1 = "Describa detalladamente las actividades operativas más complejas que realizó en su última labor camaronera."
+                            q1 = ""
                     except Exception:
                         st.session_state.cv_score = 7.5
-                        q1 = "Describa detalladamente las actividades operativas más complejas que realizó en su última labor camaronera."
+                        q1 = ""
                 else:
                     st.session_state.cv_score = 7.5
-                    q1 = "Describa las actividades operativas y de campo que desempeñaba en su último trabajo en fincas."
+                    q1 = ""
+
+                if not q1:
+                    if es_biologo:
+                        q1 = f"En base a su experiencia en {st.session_state.extracted_entities.get('empresa', 'camaroneras')}, ¿cuál era su protocolo para monitoreo de biomasa y ajuste de tablas de alimentación?"
+                    else:
+                        q1 = f"En su trabajo anterior en {st.session_state.extracted_entities.get('empresa', 'camaroneras')}, ¿cuáles eran sus tareas diarias en las piscinas y cómo realizaba los muestreos de atarraya?"
 
                 st.session_state.chat_history = [
                     {"role": "agent", "content": f"Hola {nombre}. Bienvenido al proceso de selección técnica de NATUSIM. {q1}"}
@@ -697,40 +727,74 @@ elif st.session_state.step == 2:
             st.session_state.chat_history.append({"role": "user", "content": user_input})
             t = st.session_state.chat_turn
 
+            es_biologo = "biólogo" in st.session_state.puesto.lower() or "técnico" in st.session_state.puesto.lower()
+
             with st.spinner("El Evaluador analiza su respuesta y formula la siguiente interrogante..."):
                 if api_key and t < 5:
                     try:
                         model = genai.GenerativeModel(MODELO)
                         dialogo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.chat_history])
-                        prompt_chat = f"""
-                        Eres el entrevistador técnico de una empresa camaronera en Ecuador.
-                        Puesto postulado: {st.session_state.puesto}.
-                        Historial:
-                        {dialogo}
+                        if es_biologo:
+                            prompt_chat = f"""
+                            Eres el Director de Producción entrevistando a un candidato para JEFATURA TÉCNICA: {st.session_state.puesto}.
+                            Historial:
+                            {dialogo}
 
-                        Formula la pregunta NÚMERO {t+1} de 5.
-                        Indaga sobre su criterio práctico ante imprevistos en piscinas, seguridad de campamento o manejo de turnos rotativos de 10/4 o 15/6.
-                        Haz una pregunta concisa, técnica y directa.
-                        """
+                            Formula la pregunta NÚMERO {t+1} de 5.
+                            ENFOQUE DE JEFATURA Y GESTIÓN:
+                            - Pregunta sobre manejo de parámetros críticos de agua (OD, pH, alcalinidad, amonio, blooms algales).
+                            - Patologías de camarón (vibriosis, AHPND, mancha blanca, hepatopáncreas).
+                            - Cálculo de biomasa, conversión alimenticia (FCR) y curvas de crecimiento.
+                            - Liderazgo y supervisión de cuadrillas de operarios (asignación de tareas, corregir faltas, exigir EPP, turnos 10/4 o 15/6).
+                            - Toma de decisiones críticas de madrugada y resolución de emergencias.
+                            Haz una pregunta técnica, exigente y de nivel directivo.
+                            """
+                        else:
+                            prompt_chat = f"""
+                            Eres el Jefe de Campo entrevistando a un OBRERO / OPERARIO ACUÍCOLA DE CAMPO: {st.session_state.puesto}.
+                            Historial:
+                            {dialogo}
+
+                            Formula la pregunta NÚMERO {t+1} de 5.
+                            ENFOQUE DE OBRERO / TRABAJADOR DE CAMPO:
+                            - Usa lenguaje directo, sencillo, cercano y sin tecnicismos universitarios ni cálculos científicos.
+                            - Pregunta sobre tareas manuales: alimentación en bote o al voleo, lance de atarraya en muestreos, limpieza de mallas y compuertas.
+                            - Rondas nocturnas a pie en muros con lodo o lluvia, reporte oportuno al supervisor si nota camarón orillado o aireador apagado.
+                            - Uso obligatorio de botas de caucho y chaleco salvavidas, resguardo ante tormentas eléctricas.
+                            - Convivencia y respeto con sus compañeros en campamento bajo jornada rotativa de 10/4 o 15/6.
+                            Haz una pregunta práctica, realista y adecuada para un obrero de finca.
+                            """
                         next_q = model.generate_content(prompt_chat).text.strip()
                     except Exception:
-                        variadas = [
-                            "¿Cómo procede si en plena madrugada una bomba de transferencia o aireador presenta falla eléctrica?",
-                            "Describa una situación real donde tuvo que corregir un parámetro crítico de agua en menos de una hora.",
-                            "¿Cómo maneja su adaptación física y familiar al régimen de campamento en jornadas de 10/4 o 15/6?",
-                            "¿Qué protocolo sigue cuando detecta un producto biológico o balanceado con fecha próxima a expirar?"
-                        ]
+                        if es_biologo:
+                            variadas = [
+                                "Si a las 02:00 AM detecta un bloom algal en colapso con oxígeno cayendo a 1.2 mg/L en piscinas de alta biomasa, ¿cuál es su plan de acción técnico inmediato?",
+                                "¿Cómo audita y ajusta la tabla de alimentación diaria cuando observa un desfase entre el consumo en platos y el peso promedio semanal?",
+                                "Ante la sospecha de hepatopáncreas pálido o vibriosis en un sector, ¿cuál es su protocolo técnico de aislamiento y muestreo?",
+                                "¿Cómo maneja la supervisión de una cuadrilla de operarios que se resiste a cumplir los protocolos de bioseguridad o rotación de turnos 10/4 o 15/6?"
+                            ]
+                        else:
+                            variadas = [
+                                "¿Cómo hace usted para alimentar en noches de lluvia fuerte y qué cuidado tiene al caminar por los muros y compuertas resbalosas?",
+                                "Si durante su guardia nocturna nota que un aireador diésel se apaga y el agua se queda quieta, ¿qué hace de inmediato?",
+                                "En las faenas de pesca o al mover sacos pesados de balanceado de 25 kg, ¿cómo cuida su cuerpo para evitar lastimarse la espalda?",
+                                "El trabajo en camaronera exige convivir con compañeros en dormitorios de campamento por turnos de 10/4 o 15/6. ¿Cómo maneja usted la convivencia y el descanso?"
+                            ]
                         next_q = variadas[t % len(variadas)]
                 elif t >= 5:
                     if api_key:
                         try:
                             model = genai.GenerativeModel(MODELO)
                             dialogo_completo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.chat_history])
+                            criterio_eval = "criterio técnico agronómico/acuícola, gestión de parámetros de agua y capacidad de liderazgo de personal" if es_biologo else "disposición al trabajo físico duro, apego a normas de seguridad y reporte oportuno al supervisor"
                             prompt_eval = f"""
-                            Actúa como un evaluador técnico camaronero senior.
-                            Evalúa el desempeño de este candidato para el puesto de {st.session_state.puesto} basándote en sus respuestas en la entrevista:
+                            Actúa como evaluador camaronero para el cargo de {st.session_state.puesto}.
+                            Evalúa el desempeño del candidato basándote en sus 5 respuestas en la entrevista:
 
                             {dialogo_completo}
+
+                            CRITERIO SEGÚN CARGO:
+                            Evalúa su {criterio_eval} y adaptación a campamento (10/4 o 15/6).
 
                             Devuelve ÚNICAMENTE un JSON:
                             {{
@@ -865,7 +929,7 @@ elif st.session_state.step == 3:
     st.markdown("---")
 
     if st.session_state.shuffled_banco is None:
-        raw = BANCO_BIOLOGOS if "biólogo" in st.session_state.puesto.lower() else RAW_OPERARIOS
+        raw = RAW_BIOLOGOS if "biólogo" in st.session_state.puesto.lower() else RAW_OPERARIOS
         st.session_state.shuffled_banco = preparar_banco_aleatorio(raw)
 
     banco = st.session_state.shuffled_banco
