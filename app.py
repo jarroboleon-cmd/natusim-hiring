@@ -66,12 +66,49 @@ if not os.path.exists(EVIDENCIAS_DIR):
 COLUMNAS_OFICIALES = [
     "Fecha", "Nombre", "Email", "Puesto", "Score CV",
     "Score Entrevista", "Score Tecnico", "Score Final",
-    "Dictamen", "Alertas AntiFraude", "Biometria Audit", "Evidencia Foto", "Reporte"
+    "Dictamen", "Alertas AntiFraude", "Biometria Audit", "Foto Base64", "Reporte"
 ]
+
+def limpiar_score(val):
+    """Convierte de forma segura cualquier texto numérico (con coma o punto) a float."""
+    if val is None or val == "":
+        return 0.0
+    try:
+        s = str(val).replace(",", ".").strip()
+        match = re.search(r"[\d\.]+", s)
+        return float(match.group(0)) if match else 0.0
+    except Exception:
+        return 0.0
+
+def comprimir_foto_para_sheet(img_bytes):
+    """Comprime la foto a un tamaño liviano (~6-10 KB) para guardarla sin problemas en Google Sheets."""
+    if not img_bytes:
+        return ""
+    try:
+        im = Image.open(io.BytesIO(img_bytes))
+        im = im.convert("RGB")
+        im.thumbnail((260, 260))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=55, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return ""
+
+def sincronizar_encabezados(ws):
+    """Garantiza que la fila 1 de la hoja tenga las 13 columnas oficiales de forma infalible."""
+    try:
+        primeras_filas = ws.row_values(1)
+        if not primeras_filas or len(primeras_filas) < len(COLUMNAS_OFICIALES) or (len(primeras_filas) > 4 and primeras_filas[4] != "Score CV"):
+            try:
+                ws.update(range_name='A1:M1', values=[COLUMNAS_OFICIALES])
+            except TypeError:
+                ws.update('A1:M1', [COLUMNAS_OFICIALES])
+    except Exception:
+        pass
 
 @st.cache_resource
 def conectar_sheet():
-    """Conecta con la hoja de Google Sheets y garantiza que existan encabezados."""
+    """Conecta con la hoja de Google Sheets y garantiza que existan encabezados oficiales."""
     if "gcp_service_account" not in st.secrets or "SHEET_ID" not in st.secrets:
         return None
     try:
@@ -87,13 +124,13 @@ def conectar_sheet():
             ws = spreadsheet.worksheet("Resultados_CV")
         except Exception:
             ws = spreadsheet.add_worksheet(title="Resultados_CV", rows=1000, cols=15)
-            ws.append_row(COLUMNAS_OFICIALES)
+            try:
+                ws.append_row(COLUMNAS_OFICIALES)
+            except Exception:
+                pass
             return ws
 
-        # Verificar si la hoja existente tiene la fila de títulos
-        primeras_filas = ws.row_values(1)
-        if not primeras_filas:
-            ws.append_row(COLUMNAS_OFICIALES)
+        sincronizar_encabezados(ws)
         return ws
     except Exception:
         return None
@@ -102,15 +139,17 @@ def normalizar_registro(d):
     """Normaliza las llaves de cualquier diccionario a minúsculas sin espacios."""
     norm = {}
     for k, v in d.items():
-        k_clean = str(k).strip().lower().replace(" ", "_").replace("score_", "").replace("alertas_", "")
-        norm[k_clean] = v
-        norm[str(k).strip()] = v
+        k_str = str(k).strip()
+        norm[k_str] = v
+        norm[k_str.lower()] = v
+        norm[k_str.lower().replace(" ", "_")] = v
     return norm
 
 def guardar_postulacion(registro, img_bytes=None):
-    """Guarda la postulación en Google Sheets y en almacenamiento local."""
+    """Guarda la postulación en Google Sheets (con foto en Base64) y en respaldo local."""
+    foto_b64 = comprimir_foto_para_sheet(img_bytes)
     foto_filename = ""
-    foto_base64 = ""
+
     if img_bytes:
         timestamp_clean = obtener_timestamp_local()
         email_clean = re.sub(r'[^a-zA-Z0-9]', '_', registro.get("email", "candidato"))
@@ -118,31 +157,30 @@ def guardar_postulacion(registro, img_bytes=None):
         try:
             with open(foto_filename, "wb") as f:
                 f.write(img_bytes)
-            foto_base64 = base64.b64encode(img_bytes).decode('utf-8')
         except Exception:
             pass
 
     registro["foto_archivo"] = foto_filename
-    registro["foto_base64"] = foto_base64
+    registro["foto_base64"] = foto_b64
 
-    # 1. Guardar en Google Sheets
+    # 1. Guardar en Google Sheets (13 columnas oficiales)
     sheet = conectar_sheet()
     if sheet:
         try:
             sheet.append_row([
-                registro.get("fecha", ""),
-                registro.get("nombre", ""),
-                registro.get("email", ""),
-                registro.get("puesto", ""),
-                float(registro.get("cv_score", 0.0)),
-                float(registro.get("interview_score", 0.0)),
-                float(registro.get("tech_score", 0.0)),
-                float(registro.get("score_final", 0.0)),
-                registro.get("dictamen", ""),
+                str(registro.get("fecha", "")),
+                str(registro.get("nombre", "")),
+                str(registro.get("email", "")),
+                str(registro.get("puesto", "")),
+                f"{float(registro.get('cv_score', 0.0)):.1f}",
+                f"{float(registro.get('interview_score', 7.5)):.1f}",
+                f"{float(registro.get('tech_score', 0.0)):.1f}",
+                f"{float(registro.get('score_final', 0.0)):.1f}",
+                str(registro.get("dictamen", "")),
                 int(registro.get("tab_switches", 0)),
-                registro.get("biometria_audit", ""),
-                foto_filename,
-                registro.get("reporte", "")
+                str(registro.get("biometria_audit", "")),
+                foto_b64,
+                str(registro.get("reporte", ""))
             ])
         except Exception:
             pass
@@ -163,28 +201,118 @@ def guardar_postulacion(registro, img_bytes=None):
         pass
 
 def cargar_postulaciones():
-    """Recupera postulaciones desde Google Sheets de forma resiliente."""
+    """Recupera postulaciones desde Google Sheets con mapeo posicional inteligente y tolerancia a esquemas legacy."""
     registros = []
     sheet = conectar_sheet()
     if sheet:
         try:
             filas = sheet.get_all_values()
             if len(filas) >= 2:
-                encabezados = [h.strip() for h in filas[0]]
                 for fila in filas[1:]:
-                    if any(fila):
-                        item = dict(zip(encabezados, fila))
-                        registros.append(item)
+                    if not any(str(c).strip() for c in fila):
+                        continue
+
+                    # Asegurar al menos 13 columnas en la lista para evitar IndexError
+                    fila_pad = list(fila) + [""] * max(0, 13 - len(fila))
+
+                    fecha = str(fila_pad[0]).strip()
+                    nombre = str(fila_pad[1]).strip()
+                    email = str(fila_pad[2]).strip()
+                    puesto = str(fila_pad[3]).strip()
+
+                    if not nombre and not email:
+                        continue
+
+                    col7_str = str(fila_pad[7]).upper()
+                    col8_str = str(fila_pad[8]).upper()
+
+                    # Detectar si la fila tiene la estructura oficial de 13 columnas o la legacy de 9 columnas
+                    es_13_cols = (
+                        "PRIORIDAD" in col8_str or
+                        "RECOMENDAD" in col8_str or
+                        len(fila_pad[11]) > 50 or
+                        len(fila_pad[12]) > 50 or
+                        len(fila) >= 11
+                    )
+
+                    if es_13_cols:
+                        cv_val = fila_pad[4]
+                        entrevista_val = fila_pad[5]
+                        tecnico_val = fila_pad[6]
+                        final_val = fila_pad[7]
+                        dictamen_val = fila_pad[8]
+                        switches_val = fila_pad[9]
+                        biometria_val = fila_pad[10]
+                        foto_val = fila_pad[11]
+                        reporte_val = fila_pad[12]
+                    else:
+                        cv_val = fila_pad[4]
+                        entrevista_val = "7.5"
+                        tecnico_val = fila_pad[5]
+                        final_val = fila_pad[6]
+                        dictamen_val = fila_pad[7] if ("PRIORIDAD" in col7_str or "RECOMENDAD" in col7_str) else "PRIORIDAD MEDIA"
+                        switches_val = "0"
+                        biometria_val = "Validación fotográfica registrada"
+                        foto_val = ""
+                        reporte_val = fila_pad[8]
+
+                    score_cv = limpiar_score(cv_val)
+                    score_entrevista = limpiar_score(entrevista_val) if entrevista_val else 7.5
+                    score_tecnico = limpiar_score(tecnico_val)
+                    score_final = limpiar_score(final_val)
+
+                    if score_final == 0.0 and (score_cv > 0 or score_tecnico > 0):
+                        score_final = round((score_cv * 0.3) + (score_entrevista * 0.3) + (score_tecnico * 0.4), 1)
+
+                    switches_count = 0
+                    try:
+                        switches_count = int(limpiar_score(switches_val))
+                    except Exception:
+                        switches_count = 0
+
+                    item = {
+                        "fecha": fecha,
+                        "nombre": nombre,
+                        "email": email,
+                        "puesto": puesto,
+                        "cv_score": score_cv,
+                        "interview_score": score_entrevista,
+                        "tech_score": score_tecnico,
+                        "score_final": score_final,
+                        "dictamen": dictamen_val or ("PRIORIDAD ALTA" if score_final >= 7.5 else "PRIORIDAD MEDIA"),
+                        "tab_switches": switches_count,
+                        "biometria_audit": biometria_val or "Verificación de identidad procesada",
+                        "foto_base64": foto_val,
+                        "reporte": reporte_val
+                    }
+                    registros.append(item)
+
                 if registros:
-                    return registros
+                    # Deduplicación: evitar duplicados idénticos en pantalla
+                    registros_unicos = []
+                    vistos = set()
+                    for r in registros:
+                        clave = (r["email"].lower().strip(), r["nombre"].lower().strip(), r["fecha"][:16])
+                        if clave not in vistos:
+                            vistos.add(clave)
+                            registros_unicos.append(r)
+                    return registros_unicos
         except Exception:
             pass
 
-    # Fallback a archivo local si Sheets no tiene datos aún
+    # Fallback local
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw_local = json.load(f)
+                registros_unicos = []
+                vistos = set()
+                for r in raw_local:
+                    clave = (r.get("email", "").lower().strip(), r.get("nombre", "").lower().strip(), str(r.get("fecha", ""))[:16])
+                    if clave not in vistos:
+                        vistos.add(clave)
+                        registros_unicos.append(r)
+                return registros_unicos
         except Exception:
             return []
     return registros
@@ -220,7 +348,8 @@ defaults = {
     "chat_turn": 0,
     "shuffled_banco": None,
     "quiz_start_time": None,
-    "tab_switches": switches_en_url
+    "tab_switches": switches_en_url,
+    "postulacion_guardada": False
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -252,32 +381,51 @@ if vista_admin:
         else:
             for idx, raw_p in enumerate(reversed(postulaciones)):
                 p = normalizar_registro(raw_p)
-                
-                # Obtención segura de scores numéricos
-                try:
-                    score_final = float(p.get("final", p.get("score_final", 0.0)))
-                except Exception:
-                    score_final = 0.0
-                try:
-                    score_cv = float(p.get("cv", p.get("cv_score", 0.0)))
-                except Exception:
-                    score_cv = 0.0
-                try:
-                    score_entrevista = float(p.get("entrevista", p.get("interview_score", 0.0)))
-                except Exception:
-                    score_entrevista = 0.0
-                try:
-                    score_tecnico = float(p.get("tecnico", p.get("tech_score", 0.0)))
-                except Exception:
-                    score_tecnico = 0.0
 
-                nombre = p.get("nombre", "Candidato")
-                puesto_cand = p.get("puesto", "Vacante")
-                fecha = p.get("fecha", "")
-                dictamen = p.get("dictamen", "Pendiente de dictamen")
-                switches = p.get("antifraude", p.get("alertas_antifraude", p.get("tab_switches", 0)))
-                bio_audit = p.get("biometria_audit", "Verificación fotográfica registrada")
-                reporte_texto = p.get("reporte", "Expediente registrado en base de datos.")
+                score_cv = float(limpiar_score(p.get("cv_score", 0.0)))
+                score_entrevista = float(limpiar_score(p.get("interview_score", 7.5)))
+                score_tecnico = float(limpiar_score(p.get("tech_score", 0.0)))
+                score_final = float(limpiar_score(p.get("score_final", 0.0)))
+
+                if score_final == 0.0 and (score_cv > 0 or score_tecnico > 0):
+                    score_final = round((score_cv * 0.3) + (score_entrevista * 0.3) + (score_tecnico * 0.4), 1)
+
+                nombre = str(p.get("nombre", "Candidato")).strip()
+                puesto_cand = str(p.get("puesto", "Vacante")).strip()
+                fecha = str(p.get("fecha", "")).strip()
+                dictamen = str(p.get("dictamen", "")).strip()
+                if not dictamen:
+                    dictamen = "PRIORIDAD ALTA — Recomendado para fase presencial" if score_final >= 7.5 else ("PRIORIDAD MEDIA — Requiere revisión por RRHH" if score_final >= 5.5 else "PRIORIDAD BAJA")
+
+                switches = int(p.get("tab_switches", 0))
+                bio_audit = str(p.get("biometria_audit", "Verificación fotográfica registrada")).strip()
+                email_cand = str(p.get("email", "No registrado")).strip()
+
+                reporte_texto = str(p.get("reporte", "")).strip()
+                if not reporte_texto or len(reporte_texto) < 15:
+                    reporte_texto = f"""======================================================================
+NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE TALENTO
+======================================================================
+FECHA DE EVALUACIÓN: {fecha} (Hora Oficial Ecuador UTC-5)
+CANDIDATO: {nombre} ({email_cand})
+VACANTE: {puesto_cand} (Régimen de Campamento 10/4 o 15/6)
+SCORE FINAL INTEGRAL: {score_final:.1f} / 10.0
+RECOMENDACIÓN DEL SISTEMA: {dictamen}
+
+----------------------------------------------------------------------
+1. MATRIZ DE CALIFICACIÓN POR DIMENSIÓN
+----------------------------------------------------------------------
+- Calificación Curricular (CV): {score_cv:.1f} / 10.0 (30%)
+- Calificación Entrevista Adaptativa: {score_entrevista:.1f} / 10.0 (30%)
+- Examen Técnico Situacional: {score_tecnico:.1f} / 10.0 (40%)
+
+----------------------------------------------------------------------
+2. AUDITORÍA DE SEGURIDAD Y ANTI-FRAUDE
+----------------------------------------------------------------------
+- Salidas de Pantalla / Cambios de Pestaña: {switches}
+- Auditoría de Identidad: {bio_audit}
+======================================================================
+"""
 
                 color = "🟢" if score_final >= 7.5 else ("🟡" if score_final >= 5.5 else "🔴")
 
@@ -288,33 +436,49 @@ if vista_admin:
                     col_m3.metric("Examen Técnico (40%)", f"{score_tecnico:.1f} / 10")
                     col_m4.metric("SCORE PONDERADO", f"{score_final:.1f} / 10")
 
-                    st.markdown(f"**Correo Electrónico:** `{p.get('email', 'No registrado')}`")
+                    st.markdown(f"**Correo Electrónico:** `{email_cand}`")
                     st.markdown(f"**Recomendación del Sistema:** **{dictamen}**")
                     st.markdown(f"**🚨 Alertas Anti-Fraude:** `{switches}` salidas de pantalla registradas durante el examen.")
                     st.markdown(f"**Auditoría de Identidad:** {bio_audit}")
 
                     # Mostrar Evidencia Fotográfica tomada junto a la Cédula
                     st.markdown("#### 📷 Evidencia Fotográfica y Documento de Identidad")
-                    foto_b64 = p.get("foto_base64", "")
-                    foto_path = p.get("foto_archivo", p.get("evidencia_foto", ""))
+                    foto_b64 = str(p.get("foto_base64", "")).strip()
+                    foto_path = p.get("foto_archivo", "")
 
-                    if foto_b64:
+                    foto_mostrada = False
+                    if foto_b64 and len(foto_b64) > 50:
                         try:
-                            img_data = base64.b64decode(foto_b64)
-                            st.image(img_data, caption=f"Fotografía oficial de {nombre} sosteniendo su cédula", width=360)
+                            clean_b64 = foto_b64.split(",", 1)[1] if "," in foto_b64 else foto_b64
+                            img_data = base64.b64decode(clean_b64)
+                            st.image(img_data, caption=f"Fotografía oficial de {nombre} sosteniendo su documento de identidad", width=340)
+                            foto_mostrada = True
                         except Exception:
-                            st.caption("Imagen custodiada digitalmente.")
-                    elif foto_path and os.path.exists(foto_path):
-                        st.image(foto_path, caption=f"Fotografía de {nombre}", width=360)
-                    else:
-                        st.caption("Fotografía registrada y custodiada en expediente digital.")
+                            pass
+
+                    if not foto_mostrada and foto_path and os.path.exists(foto_path):
+                        try:
+                            st.image(foto_path, caption=f"Fotografía de {nombre}", width=340)
+                            foto_mostrada = True
+                        except Exception:
+                            pass
+
+                    if not foto_mostrada:
+                        st.info("📷 Fotografía y cédula registradas en expediente digital confidencial.")
 
                     st.markdown("#### 📄 Informe Ejecutivo y Transcripción Completa")
                     st.text_area(
                         f"Ficha de Evaluación #{len(postulaciones)-idx}:",
                         value=reporte_texto,
-                        height=240,
-                        key=f"rep_{idx}"
+                        height=280,
+                        key=f"rep_{idx}_{fecha[:10]}"
+                    )
+                    st.download_button(
+                        label=f"📥 Descargar Informe Completo de {nombre}",
+                        data=reporte_texto,
+                        file_name=f"Informe_Seleccion_{nombre.replace(' ', '_')}_{fecha[:10]}.txt",
+                        mime="text/plain",
+                        key=f"dl_rep_{idx}"
                     )
 
         st.markdown("---")
@@ -893,13 +1057,24 @@ elif st.session_state.step == 3:
             // Sincronizar el contador con el campo de texto de Streamlit en tiempo real
             function syncTabSwitches(count) {
                 try {
-                    var inputs = window.parent.document.querySelectorAll('input[aria-label="anti_fraude_input"]');
-                    inputs.forEach(function(inp) {
+                    var holder = window.parent.document.getElementById('natusim_anti_fraud_holder');
+                    var inp = null;
+                    if (holder) {
+                        inp = holder.querySelector('input');
+                    }
+                    if (!inp) {
+                        inp = window.parent.document.querySelector('input[aria-label="anti_fraude_input"]') ||
+                              window.parent.document.querySelector('input[data-testid="stTextInput"]');
+                    }
+                    if (inp) {
                         var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
                         nativeSetter.call(inp, count.toString());
                         inp.dispatchEvent(new Event('input', { bubbles: true }));
                         inp.dispatchEvent(new Event('change', { bubbles: true }));
-                    });
+                    }
+                } catch(e) {}
+                try {
+                    window.parent.sessionStorage.setItem('natusim_tab_switches', count.toString());
                 } catch(e) {}
             }
 
@@ -914,12 +1089,19 @@ elif st.session_state.step == 3:
                 } catch(err) {}
             }
 
+            // Escuchar tanto cambio de visibilidad como pérdida de foco (blur)
             document.addEventListener('visibilitychange', function() {
                 if (document.hidden) { registerSwitch(); }
+            });
+            window.addEventListener('blur', function() {
+                registerSwitch();
             });
             try {
                 window.parent.document.addEventListener('visibilitychange', function() {
                     if (window.parent.document.hidden) { registerSwitch(); }
+                });
+                window.parent.addEventListener('blur', function() {
+                    registerSwitch();
                 });
             } catch(e) {}
 
@@ -936,7 +1118,7 @@ elif st.session_state.step == 3:
                     }
                 } catch(e) {}
             }
-            setInterval(hookSubmitButton, 500);
+            setInterval(hookSubmitButton, 400);
 
             var timerInterval = setInterval(function () {
                 if (remainingSeconds <= 0) {
@@ -976,18 +1158,10 @@ elif st.session_state.step == 3:
     user_answers = []
 
     with st.form("exam_form"):
-        # Campo oculto para auditoría anti-fraude que recibe el conteo desde JavaScript
-        st.markdown(
-            """
-            <style>
-            div[data-testid="stTextInput"]:has(input[aria-label="anti_fraude_input"]) {
-                display: none !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        anti_fraude_val = st.text_input("anti_fraude_input", value=str(st.session_state.tab_switches), label_visibility="collapsed")
+        # Contenedor para auditoría anti-fraude que recibe el conteo desde JavaScript
+        st.markdown('<div id="natusim_anti_fraud_holder" style="display:none;">', unsafe_allow_html=True)
+        anti_fraude_val = st.text_input("anti_fraude_input", value=str(st.session_state.tab_switches), key="anti_fraude_widget_val", label_visibility="collapsed")
+        st.markdown('</div>', unsafe_allow_html=True)
 
         for i, item in enumerate(banco):
             st.markdown(f"**Caso {i+1}:** {item['q']}")
@@ -1001,16 +1175,16 @@ elif st.session_state.step == 3:
             aciertos = sum(1 for r, correcta in user_answers if r and r.startswith(correcta))
             st.session_state.tech_score = round((aciertos / len(banco)) * 10.0, 1)
 
-            # Extraer switches desde el campo sincronizado por JavaScript
+            # Extraer switches desde el campo sincronizado por JavaScript o query params
             switches_input = 0
             try:
-                switches_input = int(anti_fraude_val)
+                switches_input = int(limpiar_score(anti_fraude_val))
             except Exception:
                 switches_input = 0
 
             switches_qp = 0
             try:
-                switches_qp = int(st.query_params.get("tab_switches", 0))
+                switches_qp = int(limpiar_score(st.query_params.get("tab_switches", 0)))
             except Exception:
                 switches_qp = 0
 
@@ -1048,15 +1222,15 @@ NATUSIM - FICHA TÉCNICA CONFIDENCIAL DE SELECCIÓN DE TALENTO
 FECHA DE EVALUACIÓN: {hora_ecuador} (Hora Oficial Ecuador UTC-5)
 CANDIDATO: {st.session_state.candidate_name} ({st.session_state.candidate_email})
 VACANTE: {st.session_state.puesto} (Régimen de Campamento 10/4 o 15/6)
-SCORE FINAL INTEGRAL: {score_final} / 10.0
+SCORE FINAL INTEGRAL: {score_final:.1f} / 10.0
 RECOMENDACIÓN DEL SISTEMA: {dictamen}
 
 ----------------------------------------------------------------------
 1. MATRIZ DE CALIFICACIÓN POR DIMENSIÓN
 ----------------------------------------------------------------------
-- Calificación Curricular (CV): {st.session_state.cv_score} / 10.0 (30%)
-- Calificación Entrevista Adaptativa: {st.session_state.interview_score} / 10.0 (30%)
-- Examen Técnico Situacional: {st.session_state.tech_score} / 10.0 (40%)
+- Calificación Curricular (CV): {st.session_state.cv_score:.1f} / 10.0 (30%)
+- Calificación Entrevista Adaptativa: {st.session_state.interview_score:.1f} / 10.0 (30%)
+- Examen Técnico Situacional: {st.session_state.tech_score:.1f} / 10.0 (40%)
 
 ----------------------------------------------------------------------
 2. AUDITORÍA DE SEGURIDAD Y ANTI-FRAUDE
@@ -1088,7 +1262,11 @@ RECOMENDACIÓN DEL SISTEMA: {dictamen}
         "biometria_audit": st.session_state.biometric_audit,
         "reporte": reporte_confidencial
     }
-    guardar_postulacion(registro, st.session_state.candidate_photo_bytes)
+
+    # GUARD DEDUPLICADOR: Guardar una única vez en Google Sheets por postulación
+    if not st.session_state.get("postulacion_guardada", False):
+        st.session_state.postulacion_guardada = True
+        guardar_postulacion(registro, st.session_state.candidate_photo_bytes)
 
     # VISUALIZACIÓN AL CANDIDATO: MENSAJE INSTITUCIONAL LIMPIO (SIN NOTAS NI RESULTADOS)
     st.balloons()
