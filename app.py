@@ -1268,26 +1268,38 @@ RECOMENDACIÓN DEL SISTEMA: {dictamen}
         st.session_state.postulacion_guardada = True
         guardar_postulacion(registro, st.session_state.candidate_photo_bytes)
 
-    # VISUALIZACIÓN AL CANDIDATO: MENSAJE INSTITUCIONAL LIMPIO (SIN NOTAS NI RESULTADOS)
+    # VISUALIZACIÓN AL CANDIDATO: MENSAJE EUFÓRICO, LOGO Y RECONOCIMIENTO (SIN NOTAS NI RESULTADOS)
     st.balloons()
+
+    # Mostrar Logo oficial de Naturisa centrado
+    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
+    with col_l2:
+        if os.path.exists("logo.png"):
+            st.image("logo.png", use_container_width=True)
+
     st.success("🎉 ¡PROCESO DE POSTULACIÓN COMPLETADO CON ÉXITO!")
 
     st.markdown(
         f"""
-        ### Estimado(a) **{st.session_state.candidate_name}**,
+        ### 🎉 ¡FELICITACIONES, **{st.session_state.candidate_name}**! 🚀
+        #### ¡Has completado con éxito todo tu proceso de evaluación técnica en Naturisa! 🦐👏
 
-        Le agradecemos por haber completado el proceso de preselección para la vacante de **{st.session_state.puesto}** en NATUSIM.
+        Estamos muy agradecidos por el tiempo, dedicación y compromiso que demostraste durante cada una de las fases de este reto.
 
-        📋 **Recepción de Recaudos Confirmada:**
-        - ✅ Registro de datos personales y validación fotográfica de identidad.
-        - ✅ Verificación de Currículum Vitae y experiencia técnica en el sector acuícola.
-        - ✅ Entrevista virtual técnica y examen situacional de campo.
+        💡 **Reconocimiento a tu participación:**  
+        Completaste con éxito los 20 escenarios reales de finca y la entrevista técnica, demostrando tu criterio en operaciones acuícolas y tu disposición para el régimen de trabajo.
 
-        🔒 **Políticas de Selección y Siguientes Pasos:**
-        Su expediente confidencial ha sido remitido al departamento de **Talento Humano**. 
-        En caso de que su perfil se ajuste a los requerimientos de la operación y vacantes disponibles en campamento bajo jornadas rotativas de 10/4 o 15/6, el equipo de Selección se contactará formalmente con usted mediante llamada telefónica o al correo oficial registrado (**{st.session_state.candidate_email}**).
+        📋 **Estado de tu expediente:**
+        - ✅ **Tus datos e identidad han sido validados con éxito.**
+        - ✅ **Tu evaluación práctica y perfil ya están en manos de nuestro equipo de Talento Humano.**
 
-        *Ya puede cerrar esta ventana.*
+        📩 Si tu perfil avanza con el proceso de selección nos comunicaremos directamente a tu correo electrónico:  
+        👉 **`{st.session_state.candidate_email}`**
+
+        *¡Muchos éxitos y gracias por querer formar parte de la familia Naturisa!*
+
+        ---
+        *Ya puede cerrar esta ventana de postulación.*
         """
     )
     st.markdown("---")
